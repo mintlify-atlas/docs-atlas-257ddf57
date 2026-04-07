@@ -1,0 +1,402 @@
+---
+title: "Install on Linux (GPU)"
+description: "Install IPEX-LLM on Linux with Intel GPU support, covering Arc, Data Center GPU Flex/Max, and iGPU."
+---
+
+IPEX-LLM supports Intel Arc™ A-Series, Intel Data Center GPU Flex Series, Intel Data Center GPU Max Series, and Intel iGPU on Linux. Ubuntu 22.04 with Linux kernel 6.2 or 6.5 is recommended.
+
+<Note>
+  For installation with PyTorch 2.6 (simpler setup, no manual oneAPI required), refer to the [PyTorch 2.6 GPU install guide](https://github.com/intel/ipex-llm/blob/main/docs/mddocs/Quickstart/install_pytorch26_gpu.md). For Intel Arc B-Series GPUs (B580), refer to the [BMG quickstart](https://github.com/intel/ipex-llm/blob/main/docs/mddocs/Quickstart/bmg_quickstart.md). For Windows, see [Install on Windows (GPU)](/quickstart/install-windows-gpu).
+</Note>
+
+## Install prerequisites
+
+### Install GPU driver
+
+<Tabs>
+  <Tab title="Meteor Lake iGPU">
+    For Intel Core™ Ultra Processors (Series 1) with processor number 1xxH/U/HL/UL (code name Meteor Lake), the verified configuration is Ubuntu 22.04 with kernel `6.5.0-35-generic`.
+
+    <Steps>
+      <Step title="Check current kernel version">
+        ```bash
+        uname -r
+        ```
+
+        If the output is not `6.5.0-35-generic`, follow the next step to change it.
+      </Step>
+
+      <Step title="(Optional) Change kernel to 6.5.0-35">
+        ```bash
+        export VERSION="6.5.0-35"
+        sudo apt-get install -y linux-headers-$VERSION-generic linux-image-$VERSION-generic linux-modules-extra-$VERSION-generic
+
+        sudo sed -i "s/GRUB_DEFAULT=.*/GRUB_DEFAULT=\"1> $(echo $(($(awk -F\' '/menuentry / {print $2}' /boot/grub/grub.cfg \
+        | grep -no $VERSION | sed 's/:/\n/g' | head -n 1)-2)))\"/" /etc/default/grub
+
+        sudo update-grub
+        sudo reboot
+        ```
+
+        After rebooting, run `uname -r` again to confirm the kernel version is `6.5.0-35-generic`.
+      </Step>
+
+      <Step title="Enable GPU driver support via force_probe">
+        ```bash
+        export FORCE_PROBE_VALUE=$(sudo dmesg | grep i915 | grep -o 'i915\.force_probe=[a-zA-Z0-9]\{4\}')
+
+        sudo sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT=/ s/\"\(.*\)\"/\"\1 $FORCE_PROBE_VALUE\"/" /etc/default/grub
+        ```
+
+        <Tip>
+          You can also check the `force_probe` value manually with `sudo dmesg | grep i915`. Look for output like `Your graphics device 7d55 is not properly supported by i915 in this kernel version. To force driver probe anyway, use i915.force_probe=7d55`. Then manually add `i915.force_probe=7d55` to `GRUB_CMDLINE_LINUX_DEFAULT` in `/etc/default/grub`.
+        </Tip>
+
+        ```bash
+        sudo update-grub
+        sudo reboot
+        ```
+      </Step>
+
+      <Step title="Install compute packages">
+        ```bash
+        wget -qO - https://repositories.intel.com/gpu/intel-graphics.key | \
+          sudo gpg --yes --dearmor --output /usr/share/keyrings/intel-graphics.gpg
+
+        echo "deb [arch=amd64,i386 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu jammy client" | \
+          sudo tee /etc/apt/sources.list.d/intel-gpu-jammy.list
+
+        sudo apt update
+
+        sudo apt-get install -y libze1 intel-level-zero-gpu intel-opencl-icd clinfo
+        ```
+      </Step>
+
+      <Step title="Configure permissions and verify">
+        ```bash
+        sudo gpasswd -a ${USER} render
+        newgrp render
+        ```
+
+        Verify the GPU driver is working:
+
+        ```bash
+        clinfo | grep "Device Name"
+        ```
+
+        The output should contain `Intel(R) Arc(TM) Graphics` or `Intel(R) Graphics`.
+
+        <Tip>
+          Refer to the [official driver guide for client GPUs](https://dgpu-docs.intel.com/driver/client/overview.html#installing-client-gpus-on-ubuntu-desktop-22-04-lts) for further details.
+        </Tip>
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Other iGPU and dGPU">
+    For Intel Core™ CPU with Intel Arc™ A-Series, Intel Data Center GPU Flex/Max, and other iGPUs on Linux kernel 6.2 or 6.5.
+
+    **Step 1: Add the Intel GPU repository**
+
+    Choose the repository that matches your CPU type:
+
+    <Tabs>
+      <Tab title="Intel Core CPU (Option 1)">
+        ```bash
+        sudo apt-get install -y gpg-agent wget
+        wget -qO - https://repositories.intel.com/gpu/intel-graphics.key | \
+        sudo gpg --dearmor --output /usr/share/keyrings/intel-graphics.gpg
+        echo "deb [arch=amd64,i386 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu jammy client" | \
+        sudo tee /etc/apt/sources.list.d/intel-gpu-jammy.list
+        ```
+      </Tab>
+      <Tab title="Intel Xeon-W/SP CPU (Option 2)">
+        ```bash
+        wget -qO - https://repositories.intel.com/gpu/intel-graphics.key | \
+        sudo gpg --yes --dearmor --output /usr/share/keyrings/intel-graphics.gpg
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu jammy/lts/2350 unified" | \
+        sudo tee /etc/apt/sources.list.d/intel-gpu-jammy.list
+        sudo apt update
+        ```
+      </Tab>
+    </Tabs>
+
+    **Step 2: Install drivers**
+
+    ```bash
+    sudo apt-get update
+
+    # Install out-of-tree driver
+    sudo apt-get -y install \
+        gawk \
+        dkms \
+        linux-headers-$(uname -r) \
+        libc6-dev
+    sudo apt install -y intel-i915-dkms intel-fw-gpu
+
+    # Install Compute Runtime
+    sudo apt-get install -y udev \
+        intel-opencl-icd intel-level-zero-gpu level-zero \
+        intel-media-va-driver-non-free libmfx1 libmfxgen1 libvpl2 \
+        libegl-mesa0 libegl1-mesa libegl1-mesa-dev libgbm1 libgl1-mesa-dev libgl1-mesa-dri \
+        libglapi-mesa libgles2-mesa-dev libglx-mesa0 libigdgmm12 libxatracker2 mesa-va-drivers \
+        mesa-vdpau-drivers mesa-vulkan-drivers va-driver-all vainfo
+
+    sudo reboot
+    ```
+
+    <Note>
+      If you are using Iris Graphics (integrated in 10–13 Gen Intel laptop CPU), use this version of `intel-i915-dkms` instead:
+      ```bash
+      sudo apt install intel-i915-dkms=1.24.2.17.240301.20+i29-1 intel-fw-gpu=2024.17.5-329~22.04
+      ```
+    </Note>
+
+    **Step 3: Configure permissions**
+
+    ```bash
+    sudo gpasswd -a ${USER} render
+    newgrp render
+
+    # Verify device is working with i915 driver
+    sudo apt-get install -y hwinfo
+    hwinfo --display
+    ```
+  </Tab>
+</Tabs>
+
+### Install oneAPI
+
+IPEX-LLM requires oneAPI 2024.0 on Linux.
+
+```bash
+wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+
+echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
+
+sudo apt update
+
+sudo apt install intel-oneapi-common-vars=2024.0.0-49406 \
+  intel-oneapi-common-oneapi-vars=2024.0.0-49406 \
+  intel-oneapi-diagnostics-utility=2024.0.0-49093 \
+  intel-oneapi-compiler-dpcpp-cpp=2024.0.2-49895 \
+  intel-oneapi-dpcpp-ct=2024.0.0-49381 \
+  intel-oneapi-mkl=2024.0.0-49656 \
+  intel-oneapi-mkl-devel=2024.0.0-49656 \
+  intel-oneapi-mpi=2021.11.0-49493 \
+  intel-oneapi-mpi-devel=2021.11.0-49493 \
+  intel-oneapi-dal=2024.0.1-25 \
+  intel-oneapi-dal-devel=2024.0.1-25 \
+  intel-oneapi-ippcp=2021.9.1-5 \
+  intel-oneapi-ippcp-devel=2021.9.1-5 \
+  intel-oneapi-ipp=2021.10.1-13 \
+  intel-oneapi-ipp-devel=2021.10.1-13 \
+  intel-oneapi-tlt=2024.0.0-352 \
+  intel-oneapi-ccl=2021.11.2-5 \
+  intel-oneapi-ccl-devel=2021.11.2-5 \
+  intel-oneapi-dnnl-devel=2024.0.0-49521 \
+  intel-oneapi-dnnl=2024.0.0-49521 \
+  intel-oneapi-tcm-1.0=1.0.0-435
+```
+
+<Warning>
+  Reboot after completing both the GPU driver and oneAPI installations:
+
+  ```bash
+  sudo reboot
+  ```
+</Warning>
+
+### Set up Python environment
+
+Install Miniforge if you don't already have conda:
+
+```bash
+wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash Miniforge3-Linux-x86_64.sh
+source ~/.bashrc
+```
+
+Verify with `conda --version`, then create and activate a Python environment:
+
+```bash
+conda create -n llm python=3.11
+conda activate llm
+```
+
+## Install `ipex-llm`
+
+With the `llm` environment active, install `ipex-llm` with XPU support. Choose either the US or CN index URL:
+
+<Tabs>
+  <Tab title="US">
+    ```bash
+    pip install --pre --upgrade ipex-llm[xpu] --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+    ```
+  </Tab>
+  <Tab title="CN">
+    ```bash
+    pip install --pre --upgrade ipex-llm[xpu] --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/cn/
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  If you encounter network issues during installation, you can download and install `torch`, `torchvision`, and `intel_extension_for_pytorch` wheel files manually. Linux wheels for Python 3.11 are available from the Intel S3 bucket (e.g., `torch-2.1.0a0+cxx11.abi-cp311-cp311-linux_x86_64.whl`).
+</Note>
+
+## Verify installation
+
+Source the oneAPI environment and import the library:
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+
+python
+```
+
+```python
+from ipex_llm.transformers import AutoModel, AutoModelForCausalLM
+```
+
+If the import completes without error, the installation is successful.
+
+## Runtime configurations
+
+Set the following environment variables before running GPU workloads. Choose the block that matches your GPU:
+
+<Tabs>
+  <Tab title="Arc A-Series / Data Center Flex">
+    ```bash
+    # Configure oneAPI environment variables
+    source /opt/intel/oneapi/setvars.sh
+
+    # Recommended for optimal performance
+    export USE_XETLA=OFF
+    export SYCL_CACHE_PERSISTENT=1
+    # Optional: may improve or degrade performance depending on workload
+    export SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+    ```
+  </Tab>
+  <Tab title="Data Center GPU Max">
+    ```bash
+    # Configure oneAPI environment variables
+    source /opt/intel/oneapi/setvars.sh
+
+    # Recommended for optimal performance
+    export LD_PRELOAD=${LD_PRELOAD}:${CONDA_PREFIX}/lib/libtcmalloc.so
+    export SYCL_CACHE_PERSISTENT=1
+    export ENABLE_SDP_FUSION=1
+    # Optional: may improve or degrade performance depending on workload
+    export SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+    ```
+
+    Install `libtcmalloc.so` with:
+
+    ```bash
+    conda install -c conda-forge -y gperftools=2.10
+    ```
+  </Tab>
+  <Tab title="Intel iGPU">
+    ```bash
+    # Configure oneAPI environment variables
+    source /opt/intel/oneapi/setvars.sh
+
+    export SYCL_CACHE_PERSISTENT=1
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS` controls whether immediate command lists are used for GPU task submission. This typically improves performance but may occasionally reduce it. Experiment with both `0` and `1` to determine the best setting for your workload. See [Intel's Level Zero documentation](https://www.intel.com/content/www/us/en/developer/articles/guide/level-zero-immediate-command-lists.html) for details.
+</Note>
+
+## Quick example
+
+This example runs the [falcon-7b](https://huggingface.co/tiiuae/falcon-7b) model with IPEX-LLM optimizations and answers "What is AI?".
+
+<Steps>
+  <Step title="Activate environment and set runtime variables">
+    ```bash
+    conda activate llm
+    source /opt/intel/oneapi/setvars.sh
+    export SYCL_CACHE_PERSISTENT=1
+    ```
+  </Step>
+
+  <Step title="Create demo.py">
+    ```python
+    import torch
+    from ipex_llm.transformers import AutoModelForCausalLM
+    from transformers import AutoTokenizer, GenerationConfig
+    generation_config = GenerationConfig(use_cache=True)
+
+    tokenizer = AutoTokenizer.from_pretrained("tiiuae/falcon-7b", trust_remote_code=True)
+
+    # Load model using ipex-llm and move it to GPU
+    model = AutoModelForCausalLM.from_pretrained(
+        "tiiuae/falcon-7b", load_in_4bit=True, cpu_embedding=True, trust_remote_code=True)
+    model = model.to('xpu')
+
+    question = "What is AI?"
+    prompt = " Question:{prompt}\n\n Answer:".format(prompt=question)
+
+    with torch.inference_mode():
+        input_ids = tokenizer.encode(prompt, return_tensors="pt").to('xpu')
+        output = model.generate(input_ids, do_sample=False, max_new_tokens=32,
+                                generation_config=generation_config).cpu()
+        output_str = tokenizer.decode(output[0], skip_special_tokens=True)
+        print(output_str)
+    ```
+
+    <Note>
+      When running on Intel iGPUs with limited memory, set `cpu_embedding=True` in `from_pretrained` to keep the embedding layer on CPU.
+    </Note>
+  </Step>
+
+  <Step title="Run the script">
+    ```bash
+    python demo.py
+    ```
+
+    **Example output** (11th Gen Intel Core i7, Iris Xe Graphics iGPU):
+
+    ```
+    Question:What is AI?
+    Answer: AI stands for Artificial Intelligence, which is the simulation of human intelligence in machines.
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### `libmkl` or `libmkl_sycl_blas` not found
+
+```
+OSError: libmkl_intel_lp64.so.2: cannot open shared object file: No such file or directory
+```
+
+This error means oneAPI has not been initialized. Run `source /opt/intel/oneapi/setvars.sh` before executing IPEX-LLM code. Make sure the versions of ipex-llm, PyTorch, IPEX, and oneAPI Base Toolkit all match: PyTorch 2.1 requires oneAPI 2024.0.
+
+### `core dump` when running with GPU
+
+If you see random core dumps during GPU execution:
+
+```bash
+sudo apt purge -y intel-i915-dkms intel-fw-gpu
+```
+
+This removes the out-of-tree driver which may conflict with your setup.
+
+### Warmup for optimal performance on first run
+
+When running LLMs on GPU for the first time, delays of several minutes before the first token are normal due to GPU kernel compilation. Run `model.generate(...)` once as a warm-up before actual generation tasks.
+
+<CardGroup cols={2}>
+  <Card title="Install on Windows (GPU)" icon="windows" href="/quickstart/install-windows-gpu">
+    Set up IPEX-LLM on Windows with Intel GPU.
+  </Card>
+  <Card title="Install on NPU" icon="microchip" href="/quickstart/install-npu">
+    Run IPEX-LLM on Intel NPU for low-power inference.
+  </Card>
+</CardGroup>

@@ -1,0 +1,260 @@
+---
+title: "PyTorch API"
+description: "Optimize any PyTorch model for Intel hardware with a single optimize_model call — no library lock-in required."
+---
+
+The `optimize_model` function in IPEX-LLM can accelerate any PyTorch model regardless of which library or API you used to load it. You do not need to use Hugging Face `transformers` — if a model is a standard `torch.nn.Module`, it can be optimized.
+
+This makes it straightforward to accelerate models loaded through custom pipelines, OpenAI Whisper, or any other PyTorch-based framework.
+
+---
+
+## `optimize_model`
+
+```python
+from ipex_llm import optimize_model
+
+model = optimize_model(model, low_bit='sym_int4')
+```
+
+### Parameters
+
+<ParamField path="model" type="nn.Module" required>
+  The PyTorch model to optimize.
+</ParamField>
+
+<ParamField path="low_bit" type="string" default="'sym_int4'">
+  Target precision for linear layer weights. Options: `'sym_int4'`, `'asym_int4'`, `'sym_int5'`, `'asym_int5'`, `'sym_int8'`, `'nf3'`, `'nf4'`, `'fp4'`, `'fp8'`, `'fp8_e4m3'`, `'fp8_e5m2'`, `'fp16'`, `'bf16'`.
+</ParamField>
+
+<ParamField path="optimize_llm" type="boolean" default="True">
+  Apply LLM-specific graph optimizations on top of quantization.
+</ParamField>
+
+<ParamField path="modules_to_not_convert" type="list[str]" default="None">
+  Names of `nn.Module` layers to skip. Useful for excluding the `lm_head` or other sensitive layers from quantization.
+</ParamField>
+
+<ParamField path="cpu_embedding" type="boolean" default="False">
+  Keep `nn.Embedding` layers on CPU. Recommended for Intel iGPU users to reduce GPU memory pressure.
+</ParamField>
+
+### Return value
+
+The optimized `nn.Module` with low-bit weights applied in-place. The model's inference API is unchanged.
+
+---
+
+## Basic usage
+
+<Steps>
+  <Step title="Load your model with any PyTorch API">
+    ```python
+    from transformers import LlamaForCausalLM
+
+    model = LlamaForCausalLM.from_pretrained(
+        "meta-llama/Llama-2-7b-chat-hf",
+        torch_dtype="auto",
+        low_cpu_mem_usage=True,
+    )
+    ```
+  </Step>
+  <Step title="Apply IPEX-LLM optimization">
+    ```python
+    from ipex_llm import optimize_model
+
+    # Default: symmetric INT4
+    model = optimize_model(model)
+    ```
+  </Step>
+  <Step title="Run inference as normal — no API changes needed">
+    ```python
+    import torch
+    from transformers import LlamaTokenizer
+
+    tokenizer = LlamaTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+
+    with torch.inference_mode():
+        input_ids = tokenizer.encode("What is AI?", return_tensors="pt")
+        output = model.generate(input_ids, max_new_tokens=64)
+        print(tokenizer.decode(output[0], skip_special_tokens=True))
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Selecting a precision
+
+Use the `low_bit` parameter to choose the quantization format that best balances accuracy and memory for your use case:
+
+<Tabs>
+  <Tab title="INT4 (default)">
+    ```python
+    from ipex_llm import optimize_model
+
+    model = optimize_model(model)  # sym_int4 by default
+    ```
+  </Tab>
+  <Tab title="INT8">
+    ```python
+    from ipex_llm import optimize_model
+
+    model = optimize_model(model, low_bit="sym_int8")
+    ```
+  </Tab>
+  <Tab title="INT5">
+    ```python
+    from ipex_llm import optimize_model
+
+    # Symmetric INT5 — a middle ground between INT4 and INT8
+    model = optimize_model(model, low_bit="sym_int5")
+    ```
+  </Tab>
+  <Tab title="FP8">
+    ```python
+    from ipex_llm import optimize_model
+
+    model = optimize_model(model, low_bit="fp8")
+    ```
+  </Tab>
+  <Tab title="BF16 / FP16">
+    ```python
+    from ipex_llm import optimize_model
+
+    model = optimize_model(model, low_bit="bf16")  # or "fp16"
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  Symmetric quantization (`sym_*`) distributes bits equally across positive and negative values. Asymmetric quantization (`asym_*`) allows different allocation for each side, which can improve accuracy on skewed weight distributions at the cost of slightly higher overhead.
+</Note>
+
+---
+
+## Non-transformers example: OpenAI Whisper
+
+`optimize_model` works on any `nn.Module`, including models from libraries that have nothing to do with Hugging Face:
+
+```python
+import whisper
+from ipex_llm import optimize_model
+
+# Load Whisper using its native API
+model = whisper.load_model("tiny")
+
+# One-line optimization
+model = optimize_model(model)
+
+# Use the optimized model without any other changes
+result = model.transcribe("audio.mp3", verbose=True, language="English")
+```
+
+---
+
+## Saving and loading optimized models
+
+Quantizing a large model from FP16 to INT4 is memory-intensive. Save the result once and reload it quickly on every subsequent run.
+
+### Save
+
+```python
+saved_dir = "./llama-2-ipex-llm-4-bit"
+model.save_low_bit(saved_dir)
+```
+
+### Load with `low_memory_init`
+
+`low_memory_init` initializes the model on the `meta` device (no actual weights allocated), then `load_low_bit` populates the weights from the saved checkpoint. This avoids loading the original FP16 weights into RAM:
+
+```python
+from transformers import LlamaForCausalLM
+from ipex_llm.optimize import low_memory_init, load_low_bit
+
+saved_dir = "./llama-2-ipex-llm-4-bit"
+
+with low_memory_init():
+    model = LlamaForCausalLM.from_pretrained(
+        saved_dir,
+        torch_dtype="auto",
+        trust_remote_code=True,
+    )
+
+model = load_low_bit(model, saved_dir)
+```
+
+### Load without `low_memory_init`
+
+If your model class is not compatible with meta-device initialization, load it through the standard method first:
+
+```python
+import whisper
+from ipex_llm.optimize import load_low_bit
+
+model = whisper.load_model("tiny")
+model = load_low_bit(model, saved_dir)
+```
+
+<Tip>
+  Saved checkpoints are platform-independent. A model saved on Linux loads correctly on Windows, and vice versa.
+</Tip>
+
+---
+
+## Using on Intel GPU
+
+After calling `optimize_model`, move the model to XPU before running inference:
+
+```python
+from transformers import LlamaForCausalLM
+from ipex_llm import optimize_model
+
+model = LlamaForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-7b-chat-hf",
+    torch_dtype="auto",
+    low_cpu_mem_usage=True,
+)
+model = optimize_model(model)
+
+model = model.to("xpu")  # Move to Intel GPU after optimization
+```
+
+When running on an Intel integrated GPU (iGPU), set `cpu_embedding=True` to keep the memory-intensive embedding layer on CPU:
+
+```python
+model = optimize_model(model, cpu_embedding=True)
+model = model.to("xpu")
+```
+
+See [GPU inference](/inference/gpu-inference) for the full workflow, including input tensor placement and warmup.
+
+---
+
+## Loading a saved model on GPU
+
+```python
+from transformers import LlamaForCausalLM
+from ipex_llm.optimize import low_memory_init, load_low_bit
+
+saved_dir = "./llama-2-ipex-llm-4-bit"
+
+with low_memory_init():
+    model = LlamaForCausalLM.from_pretrained(
+        saved_dir,
+        torch_dtype="auto",
+        trust_remote_code=True,
+    )
+
+model = load_low_bit(model, saved_dir)
+model = model.to("xpu")
+```
+
+<CardGroup cols={2}>
+  <Card title="Transformers-style API" icon="code" href="/inference/transformers-api">
+    Use the drop-in AutoModel replacement for Hugging Face Transformers models.
+  </Card>
+  <Card title="GPU inference" icon="microchip" href="/inference/gpu-inference">
+    Full guide to running optimized models on Intel Arc, Flex, and Max GPUs.
+  </Card>
+</CardGroup>

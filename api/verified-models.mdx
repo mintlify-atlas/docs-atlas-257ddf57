@@ -1,0 +1,222 @@
+---
+title: "Verified models"
+description: "Over 70 models verified to work with IPEX-LLM on CPU, GPU, and NPU."
+---
+
+The following models have been optimized and verified on `ipex-llm`. The CPU, GPU, and NPU columns indicate which targets have been confirmed to work.
+
+<Note>
+"Verified" means the model has been tested end-to-end on the indicated hardware target with at least one quantization format. Most models support additional formats beyond what was used in verification. See [Quantization Formats](/api/quantization-formats) for the full list of supported formats.
+</Note>
+
+---
+
+## LLaMA family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| LLaMA | Yes | Yes | |
+| LLaMA 2 | Yes | Yes | Yes |
+| LLaMA 3 | Yes | Yes | Yes |
+| LLaMA 3.1 | Yes | Yes | |
+| LLaMA 3.2 | | Yes | Yes |
+| LLaMA 3.2-Vision | | Yes | |
+| LLaVA | Yes | Yes | |
+| CodeLlama | Yes | Yes | |
+
+---
+
+## ChatGLM / GLM family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| ChatGLM | Yes | | |
+| ChatGLM2 | Yes | Yes | |
+| ChatGLM3 | Yes | Yes | |
+| GLM-4 | Yes | Yes | |
+| GLM-4V | Yes | Yes | |
+| GLM-Edge | | Yes | Yes |
+| GLM-Edge-V | | Yes | |
+| CodeGeeX2 | Yes | Yes | |
+
+---
+
+## Mistral / Mixtral family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| Mistral | Yes | Yes | |
+| Mixtral | Yes | Yes | |
+| Phixtral | Yes | Yes | |
+| SOLAR | Yes | Yes | |
+
+---
+
+## Qwen family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| Qwen | Yes | Yes | |
+| Qwen1.5 | Yes | Yes | |
+| Qwen2 | Yes | Yes | Yes |
+| Qwen2.5 | | Yes | Yes |
+| Qwen-VL | Yes | Yes | |
+| Qwen2-VL | | Yes | |
+| Qwen2-Audio | | Yes | |
+
+---
+
+## DeepSeek family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| DeepSeek | Yes | Yes | |
+| DeepSeek-MoE | Yes | | |
+
+<Tip>
+DeepSeek V3/R1 671B and Qwen3MoE 235B can be run on 1–2 Intel Arc GPUs using [FlashMoE](https://github.com/intel/ipex-llm/blob/master/docs/mddocs/Quickstart/flashmoe_quickstart.md).
+</Tip>
+
+---
+
+## Phi family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| Phi-1_5 | Yes | Yes | |
+| Phi-2 | Yes | Yes | |
+| Phi-3 | Yes | Yes | |
+| Phi-3-vision | Yes | Yes | |
+
+---
+
+## Gemma family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| Gemma | Yes | Yes | |
+| Gemma2 | | Yes | |
+| CodeGemma | Yes | Yes | |
+| Gemma3 | | Yes | |
+
+---
+
+## MiniCPM family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| MiniCPM | Yes | Yes | Yes |
+| MiniCPM3 | | Yes | |
+| MiniCPM-V | | Yes | |
+| MiniCPM-V-2 | Yes | Yes | |
+| MiniCPM-Llama3-V-2_5 | | Yes | Yes |
+| MiniCPM-V-2_6 | Yes | Yes | Yes |
+| MiniCPM-o-2_6 | | Yes | |
+
+---
+
+## Baichuan family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| Baichuan | Yes | Yes | |
+| Baichuan2 | Yes | Yes | Yes |
+
+---
+
+## InternLM family
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| InternLM | Yes | Yes | |
+| InternLM2 | Yes | Yes | |
+| InternLM-XComposer | Yes | | |
+| InternVL2 | | Yes | |
+
+---
+
+## Speech and audio models
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| Whisper | Yes | Yes | |
+| Distil-Whisper | Yes | Yes | |
+| SpeechT5 | | Yes | |
+| Qwen2-Audio | | Yes | |
+| Speech_Paraformer-Large | | | Yes |
+
+---
+
+## Code models
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| StarCoder | Yes | Yes | |
+| Replit Code | Yes | Yes | |
+| WizardCoder-Python | Yes | | |
+| CodeShell | Yes | | |
+| CodeGemma | Yes | Yes | |
+| CodeGeeX2 | Yes | Yes | |
+| CodeLlama | Yes | Yes | |
+
+---
+
+## Other models
+
+| Model | CPU | GPU | NPU |
+|---|---|---|---|
+| Falcon | Yes | Yes | |
+| MPT | Yes | Yes | |
+| Dolly-v1 | Yes | Yes | |
+| Dolly-v2 | Yes | Yes | |
+| RedPajama | Yes | | |
+| Phoenix | Yes | | |
+| MOSS | Yes | | |
+| Aquila | Yes | Yes | |
+| Aquila2 | Yes | Yes | |
+| Flan-T5 | Yes | Yes | |
+| Yi | Yes | Yes | |
+| BlueLM | Yes | Yes | |
+| Mamba | Yes | Yes | |
+| RWKV4 | | Yes | |
+| RWKV5 | | Yes | |
+| Bark | Yes | Yes | |
+| DeciLM-7B | Yes | Yes | |
+| StableLM | Yes | Yes | |
+| Command-R / Cohere | Yes | Yes | |
+| Yuan2 | Yes | Yes | |
+| Skywork | Yes | | |
+| Fuyu | Yes | | |
+| Ziya-Coding-34B-v1.0 | Yes | | |
+| SOLAR | Yes | Yes | |
+| Janus-Pro | | Yes | |
+| Moonlight | | Yes | |
+| StableDiffusion | | Yes | |
+| Bce-Embedding-Base-V1 | | | Yes |
+
+---
+
+## How to load a verified model
+
+All verified models are loaded through the same `AutoModel` API. Use the HuggingFace model ID directly:
+
+```python
+from ipex_llm.transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer
+
+# Example: Qwen2-7B on GPU in INT4
+model = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen2-7B-Instruct",
+    load_in_4bit=True,
+    cpu_embedding=True,
+    optimize_model=True,
+    trust_remote_code=True,
+)
+model = model.half().to("xpu")
+
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-7B-Instruct", trust_remote_code=True)
+```
+
+<Note>
+Models that use custom code (ChatGLM, Qwen, Baichuan, InternLM, etc.) require `trust_remote_code=True` in both `from_pretrained` calls.
+</Note>

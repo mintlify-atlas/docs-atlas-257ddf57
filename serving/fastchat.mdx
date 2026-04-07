@@ -1,0 +1,316 @@
+---
+title: "FastChat"
+description: "Serve multiple LLMs simultaneously using FastChat with IPEX-LLM as the inference backend."
+---
+
+[FastChat](https://github.com/lm-sys/FastChat) is an open platform for training, serving, and evaluating large language model chatbots. IPEX-LLM integrates with FastChat as a drop-in inference backend, enabling you to serve any Hugging Face Transformer model with low-bit quantization on Intel CPU or GPU.
+
+## Installation
+
+<Tabs>
+  <Tab title="CPU">
+    ```bash
+    pip install --pre --upgrade ipex-llm[serving,all]
+    ```
+  </Tab>
+  <Tab title="GPU (XPU)">
+    ```bash
+    pip install --pre --upgrade ipex-llm[xpu,serving] \
+      --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+    ```
+  </Tab>
+</Tabs>
+
+## Starting the service
+
+FastChat uses a three-process architecture: a controller, one or more model workers, and an API or web server. Start each component in a separate terminal.
+
+<Steps>
+  <Step title="Start the controller">
+    The controller coordinates model workers and routes requests.
+
+    ```bash
+    python3 -m fastchat.serve.controller
+    ```
+
+    When the controller starts successfully, you will see:
+
+    ```
+    Uvicorn running on http://localhost:21001
+    ```
+  </Step>
+
+  <Step title="Start a model worker">
+    The model worker loads and runs inference on a specific model. Use `ipex_llm_worker` for direct HuggingFace model loading with IPEX-LLM acceleration.
+
+    <Tabs>
+      <Tab title="CPU">
+        ```bash
+        # Available low_bit formats: sym_int4, sym_int8, bf16
+        python3 -m ipex_llm.serving.fastchat.ipex_llm_worker \
+          --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+          --low-bit "sym_int4" \
+          --trust-remote-code \
+          --device "cpu"
+        ```
+      </Tab>
+      <Tab title="GPU (XPU)">
+        ```bash
+        source /opt/intel/oneapi/setvars.sh
+        export USE_XETLA=OFF
+        # Optional: improves performance on most systems
+        export SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+
+        # Available low_bit formats: sym_int4, sym_int8, fp16
+        python3 -m ipex_llm.serving.fastchat.ipex_llm_worker \
+          --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+          --low-bit "sym_int4" \
+          --trust-remote-code \
+          --device "xpu"
+        ```
+      </Tab>
+    </Tabs>
+
+    A successful worker startup shows:
+
+    ```
+    2024-04-12 18:18:09 | INFO | ipex_llm.transformers.utils | Converting the current model to sym_int4 format......
+    2024-04-12 18:18:11 | INFO | model_worker | Register to controller
+    2024-04-12 18:18:11 | ERROR | stderr | INFO:     Uvicorn running on http://localhost:21002
+    ```
+
+    #### Using a pre-saved low-bit model
+
+    If you have already saved a quantized model to disk using `save_low_bit`, load it directly:
+
+    ```bash
+    python3 -m ipex_llm.serving.fastchat.ipex_llm_worker \
+      --model-path /path/to/low-bit-model \
+      --trust-remote-code \
+      --device "xpu" \
+      --load-low-bit-model
+    ```
+
+    #### Using the vLLM worker
+
+    For higher GPU utilization, use the vLLM-backed worker instead:
+
+    <Tabs>
+      <Tab title="CPU">
+        ```bash
+        python3 -m ipex_llm.serving.fastchat.vllm_worker \
+          --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+          --device cpu
+        ```
+      </Tab>
+      <Tab title="GPU (XPU)">
+        ```bash
+        source /opt/intel/oneapi/setvars.sh
+        export USE_XETLA=OFF
+        export SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+
+        python3 -m ipex_llm.serving.fastchat.vllm_worker \
+          --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+          --device xpu \
+          --load-in-low-bit "sym_int4" \
+          --enforce-eager
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Start an API or web server">
+    Once the controller and at least one worker are running, start the interface you need.
+  </Step>
+</Steps>
+
+## OpenAI-compatible REST API
+
+Start the OpenAI-compatible API server:
+
+```bash
+python3 -m fastchat.serve.openai_api_server --host localhost --port 8000
+```
+
+### List available models
+
+```bash
+curl http://localhost:8000/v1/models | jq
+```
+
+Example output:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "Llama-2-7b-chat-hf",
+      "object": "model",
+      "created": 1712919071,
+      "owned_by": "fastchat"
+    }
+  ]
+}
+```
+
+### Chat completions
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Llama-2-7b-chat-hf",
+    "messages": [{"role": "user", "content": "Hello! What is your name?"}]
+  }' | jq
+```
+
+Example output:
+
+```json
+{
+  "id": "chatcmpl-jJ9vKSGkcDMTxKfLxK7q2x",
+  "object": "chat.completion",
+  "model": "Llama-2-7b-chat-hf",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": " Hello! My name is LLaMA, I'm a large language model trained by Meta AI."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 15,
+    "total_tokens": 53,
+    "completion_tokens": 38
+  }
+}
+```
+
+### Text completions
+
+```bash
+curl http://localhost:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Llama-2-7b-chat-hf",
+    "prompt": "Once upon a time",
+    "max_tokens": 41,
+    "temperature": 0.5
+  }' | jq
+```
+
+## TGI-style API
+
+FastChat also provides a TGI-compatible API for streaming and non-streaming responses.
+
+```bash
+python3 -m ipex_llm.serving.fastchat.tgi_api_server --host localhost --port 8000
+```
+
+### Non-streaming generation
+
+```bash
+curl -X POST http://localhost:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "inputs": "What is AI?",
+    "parameters": {
+      "max_new_tokens": 32,
+      "temperature": 0.5,
+      "top_p": 0.95
+    }
+  }'
+```
+
+### Streaming generation
+
+```bash
+curl -X POST http://localhost:8000/generate_stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "inputs": "What is AI?",
+    "parameters": {
+      "max_new_tokens": 32,
+      "temperature": 0.5
+    }
+  }'
+```
+
+The streaming endpoint sends server-sent events, one token at a time:
+
+```
+data: {"token": {"text": "Artificial Intelligence ", ...}, "generated_text": null}
+data: {"token": {"text": "(AI) is ", ...}, "generated_text": null}
+...
+data: {"token": {"text": "</s>", "special": true}, "generated_text": "Artificial Intelligence (AI) is ..."}
+```
+
+## Web UI
+
+Start the Gradio web server to interact with models through a browser:
+
+```bash
+python3 -m fastchat.serve.gradio_web_server
+```
+
+Open the displayed URL in your browser to start chatting.
+
+## Running multiple workers
+
+### Multiple CPU workers (NUMA-aware)
+
+Pin each worker to a separate NUMA socket for best performance on multi-socket servers. Assuming 48 physical cores per socket:
+
+```bash
+export OMP_NUM_THREADS=48
+
+numactl -C 0-47 -m 0 python3 -m ipex_llm.serving.fastchat.ipex_llm_worker \
+  --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+  --low-bit "sym_int4" \
+  --trust-remote-code \
+  --device "cpu" &
+
+numactl -C 48-95 -m 1 python3 -m ipex_llm.serving.fastchat.ipex_llm_worker \
+  --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+  --low-bit "sym_int4" \
+  --trust-remote-code \
+  --device "cpu" \
+  --port 21003 \
+  --worker-address "http://localhost:21003" &
+```
+
+### Multiple GPU workers
+
+Use `ZE_AFFINITY_MASK` to bind each worker to a specific GPU:
+
+```bash
+ZE_AFFINITY_MASK=1 python3 -m ipex_llm.serving.fastchat.ipex_llm_worker \
+  --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+  --low-bit "sym_int4" \
+  --trust-remote-code \
+  --device "xpu" &
+
+ZE_AFFINITY_MASK=2 python3 -m ipex_llm.serving.fastchat.ipex_llm_worker \
+  --model-path REPO_ID_OR_YOUR_MODEL_PATH \
+  --low-bit "sym_int4" \
+  --trust-remote-code \
+  --device "xpu" \
+  --port 21003 \
+  --worker-address "http://localhost:21003" &
+```
+
+<Tip>
+  Set `ZE_AFFINITY_MASK` and run `sycl-ls` to verify which GPU each value maps to on your system.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="vLLM" icon="server" href="/serving/vllm">
+    High-throughput continuous batching with the vLLM engine.
+  </Card>
+  <Card title="LangChain & LlamaIndex" icon="link" href="/serving/langchain-llamaindex">
+    Build RAG pipelines and agents with LangChain and LlamaIndex.
+  </Card>
+</CardGroup>

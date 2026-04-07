@@ -1,0 +1,260 @@
+---
+title: "Quantization formats"
+description: "All supported low-bit quantization formats, when to use each, and approximate memory requirements."
+---
+
+IPEX-LLM supports a wide range of quantization formats for model weights. You select a format by setting `load_in_4bit=True` or `load_in_low_bit="<format>"` in `AutoModel.from_pretrained`, or via the `low_bit` parameter in `optimize_model`.
+
+---
+
+## How to specify a format
+
+<Tabs>
+  <Tab title="4-bit shorthand">
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-2-7b-hf",
+        load_in_4bit=True,           # uses sym_int4 for standard models
+    )
+    ```
+    `load_in_4bit=True` selects `sym_int4` for regular FP16/BF16/FP32 models and `asym_int4` for GPTQ models.
+  </Tab>
+  <Tab title="Explicit format">
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "mistralai/Mistral-7B-v0.1",
+        load_in_low_bit="nf4",       # NormalFloat 4-bit
+    )
+    ```
+  </Tab>
+  <Tab title="PyTorch API">
+    ```python
+    from ipex_llm import optimize_model
+
+    model = optimize_model(model, low_bit="sym_int8")
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Integer formats
+
+### `sym_int4` — Symmetric INT4
+
+4-bit signed integer with symmetric (zero-centered) quantization. This is the default when `load_in_4bit=True` is used with a standard (non-GPTQ) model.
+
+- **Memory vs 16-bit:** ~4× reduction
+- **Speed:** Fastest integer format on Intel hardware
+- **Quality:** Good for most LLMs at 7B+ parameters; some quality loss on smaller models
+- **Use when:** You want maximum throughput and minimum memory
+
+### `asym_int4` — Asymmetric INT4
+
+4-bit signed integer with asymmetric quantization (non-zero zero-point). Selected automatically for GPTQ models when `load_in_4bit=True`.
+
+- **Memory vs 16-bit:** ~4× reduction
+- **Quality:** Slightly better than `sym_int4` for models with skewed weight distributions
+
+### `sym_int5` — Symmetric INT5
+
+5-bit symmetric integer quantization. A middle ground between INT4 and INT8.
+
+- **Memory vs 16-bit:** ~3.2× reduction
+- **Quality:** Noticeably better than INT4; a good choice when you have slightly more memory budget
+
+### `asym_int5` — Asymmetric INT5
+
+5-bit asymmetric integer quantization.
+
+- **Memory vs 16-bit:** ~3.2× reduction
+- **Quality:** Marginally better than `sym_int5` for models with skewed distributions
+
+### `sym_int8` — Symmetric INT8
+
+8-bit symmetric integer quantization. Minimal quality loss compared to full precision.
+
+- **Memory vs 16-bit:** ~2× reduction
+- **Quality:** Near-lossless for most tasks
+- **Use when:** Quality is critical and you have enough memory for 8-bit weights; also recommended for `lm_head` via `mixed_precision=True`
+
+---
+
+## Floating-point formats
+
+### `nf4` — NormalFloat 4-bit
+
+4-bit format based on the Normal Float data type introduced in QLoRA (Dettmers et al., 2023). Values are distributed according to a normal distribution rather than uniform intervals, which better matches the empirical weight distribution of large language models.
+
+- **Memory vs 16-bit:** ~4× reduction
+- **Quality:** Typically better than `sym_int4` and comparable to `asym_int4`
+- **Use when:** You are doing QLoRA finetuning, or you want the best quality at 4 bits
+
+### `nf3` — NormalFloat 3-bit
+
+3-bit variant of the NormalFloat format.
+
+- **Memory vs 16-bit:** ~5.3× reduction
+- **Quality:** Significant quality loss; suitable only for very large models where extreme compression is required
+
+### `fp4` — Floating Point 4-bit
+
+4-bit floating-point representation (4-bit FP with exponent and mantissa).
+
+- **Memory vs 16-bit:** ~4× reduction
+- **Quality:** Similar to `nf4` in practice
+
+### `fp8` — Floating Point 8-bit
+
+8-bit floating-point quantization. Uses the E4M3 variant by default when `fp8` is specified.
+
+- **Memory vs 16-bit:** ~2× reduction
+- **Quality:** Near-lossless; closer to FP16 than INT8 in terms of representable values
+
+### `fp8_e4m3` — FP8 E4M3
+
+FP8 with 4 exponent bits and 3 mantissa bits. Provides a wider dynamic range at the cost of precision.
+
+- **Use when:** Model weights have high dynamic range (outliers); preferred for inference
+
+### `fp8_e5m2` — FP8 E5M2
+
+FP8 with 5 exponent bits and 2 mantissa bits. Higher dynamic range, lower precision than E4M3.
+
+- **Use when:** Training-time quantization where gradient values need wider dynamic range
+
+### `fp6` — 6-bit Floating Point
+
+6-bit floating-point format.
+
+- **Memory vs 16-bit:** ~2.7× reduction
+
+### `fp6_k` — FP6 (K variant)
+
+Alternative FP6 encoding, corresponding to the `Q6_K` quantization from llama.cpp.
+
+### `fp16` — Half Precision
+
+Standard IEEE 754 half-precision (16-bit) floating point. No quantization — weights remain in FP16.
+
+- **Memory vs FP32:** 2× reduction
+- **Quality:** Lossless relative to FP16 source models
+- **Use when:** Running on GPU and you want full FP16 precision with only kernel-level optimizations
+
+<Note>
+When setting `low_bit="fp16"`, you must also pass `torch_dtype=torch.float16` to `from_pretrained` or `optimize_model`. The library enforces this and will raise an error if they conflict.
+</Note>
+
+### `bf16` — Brain Float 16
+
+16-bit floating point with the same exponent range as FP32 but reduced mantissa bits. Preferred on Intel hardware because XPU devices have native BF16 compute units.
+
+- **Memory vs FP32:** 2× reduction
+- **Quality:** Lossless relative to BF16 source models
+- **Use when:** Running on Intel Arc GPU or Intel Xeon with BF16 support; recommended for QLoRA finetuning
+
+---
+
+## GGUF formats
+
+IPEX-LLM can load GGUF-quantized model files directly via `AutoModelForCausalLM.from_gguf()` or via `load_in_low_bit` with one of the GGUF format strings.
+
+| Format string | Approx. bits per weight | Description |
+|---|---|---|
+| `gguf_q4k_m` | ~4.5 | Q4_K_M — 4-bit grouped, medium variant. Best all-round quality for 4-bit GGUF |
+| `gguf_q4k_s` | ~4.25 | Q4_K_S — 4-bit grouped, small variant |
+| `gguf_iq2_xxs` | ~2.06 | IQ2_XXS — 2-bit with importance matrix; extreme compression |
+| `gguf_iq2_xs` | ~2.31 | IQ2_XS — 2-bit, slightly larger than XXS |
+| `gguf_iq1_s` | ~1.56 | IQ1_S — 1.5-bit; maximum compression, lowest quality |
+
+<Warning>
+GGUF IQ2 and IQ1 formats require an importance matrix (`imatrix`) file for acceptable quality. Pass the path via the `imatrix` parameter in `from_pretrained`.
+</Warning>
+
+---
+
+## AWQ and GPTQ
+
+IPEX-LLM supports loading models that have already been quantized with AWQ or GPTQ:
+
+<Tabs>
+  <Tab title="GPTQ">
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+
+    # load_in_4bit=True automatically uses asym_int4 for GPTQ models
+    model = AutoModelForCausalLM.from_pretrained(
+        "TheBloke/Llama-2-7B-GPTQ",
+        load_in_4bit=True,
+        optimize_model=True,
+    )
+    ```
+  </Tab>
+  <Tab title="AWQ">
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "TheBloke/Llama-2-7B-AWQ",
+        load_in_low_bit="sym_int4",
+        optimize_model=True,
+    )
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Memory estimates for a 7B model
+
+The following are approximate peak GPU/CPU memory requirements for a 7-billion-parameter model loaded in each format. Actual usage varies with model architecture, vocabulary size, and sequence length.
+
+| Format | Approx. weight size | Notes |
+|---|---|---|
+| FP32 (baseline) | ~28 GB | No quantization |
+| `fp16` / `bf16` | ~14 GB | 2× reduction |
+| `sym_int8` | ~7 GB | 4× reduction |
+| `fp8` | ~7 GB | 4× reduction |
+| `fp6` | ~5.3 GB | ~5.3× reduction |
+| `sym_int5` / `asym_int5` | ~4.4 GB | ~6.4× reduction |
+| `nf4` / `sym_int4` / `asym_int4` / `fp4` | ~3.5 GB | ~8× reduction |
+| `nf3` | ~2.6 GB | ~10.7× reduction |
+| `gguf_iq2_xxs` | ~1.8 GB | ~15× reduction |
+
+<Note>
+These figures cover weight storage only. Add KV-cache, activations, and framework overhead when estimating total VRAM requirements.
+</Note>
+
+---
+
+## Choosing a format
+
+<AccordionGroup>
+  <Accordion title="Maximum quality (memory available)">
+    Use `bf16` on Intel GPU/XPU or `fp16` if the model was released in FP16. These formats apply optimizations without changing weight values.
+  </Accordion>
+
+  <Accordion title="Best quality at 8 bits">
+    Use `sym_int8` or `fp8`. Both offer near-lossless compression at 2× the memory savings of full precision.
+  </Accordion>
+
+  <Accordion title="Best quality at 4 bits">
+    Use `nf4` for HuggingFace models (matches QLoRA paper results). Use `gguf_q4k_m` if loading a GGUF file. Use `sym_int4` for maximum speed on Intel hardware.
+  </Accordion>
+
+  <Accordion title="Minimum memory (extreme compression)">
+    Use `gguf_iq2_xxs` with a pre-computed importance matrix. Expect noticeable quality degradation; suitable only for very large models where quality/memory trade-offs are acceptable.
+  </Accordion>
+
+  <Accordion title="QLoRA finetuning">
+    Use `nf4` as the base quantization format. Pass `load_in_low_bit="nf4"` to `from_pretrained`, then follow the [QLoRA API](/api/qlora) to add LoRA adapters.
+  </Accordion>
+
+  <Accordion title="Mixed precision">
+    For INT4 models where output quality is critical, set `mixed_precision=True` in `from_pretrained`. This keeps `lm_head` at `sym_int8` while the rest of the model uses `sym_int4` or `asym_int4`.
+  </Accordion>
+</AccordionGroup>

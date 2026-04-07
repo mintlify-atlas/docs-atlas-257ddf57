@@ -1,0 +1,269 @@
+---
+title: "QLoRA & Finetuning API"
+description: "API reference for low-bit finetuning with LoRA, QLoRA, QA-LoRA, and related methods."
+---
+
+The `ipex_llm.transformers.qlora` module provides building blocks for parameter-efficient finetuning on Intel hardware. It wraps HuggingFace PEFT and patches the LoRA model internals so that adapters operate correctly on top of IPEX-LLM quantized linear layers.
+
+<Note>
+Supported training methods: **LoRA**, **QLoRA**, **QA-LoRA**, **DPO**, and **ReLoRA**. The `training_mode` field on `LoraConfig` selects which method is used.
+</Note>
+
+---
+
+## `prepare_model_for_kbit_training`
+
+```python
+from ipex_llm.transformers.qlora import prepare_model_for_kbit_training
+```
+
+```python
+prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+```
+
+Prepares a quantized model for LoRA/QLoRA finetuning. Specifically:
+
+1. Freezes all base model parameters (`requires_grad = False`).
+2. Casts non-linear, non-embedding leaf module parameters from FP16/BF16 to FP32 (e.g. LayerNorm weights), so gradient computations remain stable.
+3. Enables gradient checkpointing when `use_gradient_checkpointing=True`.
+
+### Parameters
+
+<ParamField path="model" type="transformers.PreTrainedModel" required>
+  The loaded IPEX-LLM quantized model (obtained via `AutoModelForCausalLM.from_pretrained` with `load_in_4bit=True` or `load_in_low_bit=...`).
+</ParamField>
+
+<ParamField path="use_gradient_checkpointing" type="boolean" default="True">
+  When `True`, enables gradient checkpointing to reduce GPU memory usage during training. Calls `model.gradient_checkpointing_enable()` and sets up the required input-requires-grad hooks.
+</ParamField>
+
+### Returns
+
+<ResponseField name="model" type="transformers.PreTrainedModel">
+  The same model instance, prepared for finetuning.
+</ResponseField>
+
+---
+
+## `get_peft_model`
+
+```python
+from ipex_llm.transformers.qlora import get_peft_model
+```
+
+```python
+get_peft_model(*args, **kwargs)
+```
+
+Wrap a prepared model with LoRA adapters. This is a patched version of `peft.get_peft_model` that transparently replaces linear layers in IPEX-LLM quantized models with `LoraLowBitLinear` (for INT4/INT5/INT8 base layers) or `LoraBF16Linear` (for BF16 base layers), instead of the standard PEFT `Linear4bit`.
+
+Accepts the same arguments as `peft.get_peft_model`:
+
+<ParamField path="model" type="torch.nn.Module" required>
+  The model prepared with `prepare_model_for_kbit_training`.
+</ParamField>
+
+<ParamField path="peft_config" type="LoraConfig" required>
+  A `LoraConfig` instance (use `ipex_llm.transformers.qlora.LoraConfig`, not the base PEFT one, to get IPEX-LLM training mode support).
+</ParamField>
+
+### Returns
+
+<ResponseField name="model" type="peft.PeftModel">
+  The wrapped model with LoRA adapters injected into the targeted modules. On XPU devices, adapter weights are automatically cast to BF16.
+</ResponseField>
+
+---
+
+## `LoraConfig`
+
+```python
+from ipex_llm.transformers.qlora import LoraConfig
+```
+
+Extends `peft.tuners.lora.LoraConfig` with one additional field:
+
+<ParamField path="training_mode" type="string" default="qlora">
+  Selects the finetuning algorithm:
+
+  - `"qlora"` — standard QLoRA (quantized base weights, FP16/BF16 adapters)
+  - `"lora"` — standard LoRA on BF16 base weights
+  - `"qalora"` — QA-LoRA with quantization-aware adapter pooling
+
+  All other `LoraConfig` fields from PEFT (`r`, `lora_alpha`, `lora_dropout`, `target_modules`, etc.) are inherited unchanged.
+</ParamField>
+
+---
+
+## `TrainingArguments`
+
+```python
+from ipex_llm.transformers.qlora import TrainingArguments
+```
+
+Extends HuggingFace `transformers.TrainingArguments` with Intel-specific defaults:
+
+- Forces `bf16=True` and `fp16=False` (BF16 is the recommended mixed-precision format for Intel hardware).
+- Validates and falls back the optimizer to `adamw_torch` if an unsupported optimizer is specified. Supported optimizers: `adamw_hf`, `adamw_torch`, `adafactor`, `sgd`, `adagrad`, `rmsprop`.
+
+Use this class as a drop-in replacement for `transformers.TrainingArguments` when finetuning with IPEX-LLM.
+
+---
+
+## `PeftModel.from_pretrained`
+
+```python
+from ipex_llm.transformers.qlora import PeftModel
+```
+
+Patched `PeftModel.from_pretrained` that loads saved LoRA adapter weights into an IPEX-LLM quantized model. The patching ensures adapter layers are reconstructed as `LoraLowBitLinear` or `LoraBF16Linear` rather than standard PEFT layers.
+
+```python
+model = PeftModel.from_pretrained(base_model, adapter_path)
+```
+
+---
+
+## Full QLoRA training example
+
+<CodeGroup>
+
+```python qlora-train.py
+from ipex_llm.transformers import AutoModelForCausalLM
+from ipex_llm.transformers.qlora import (
+    prepare_model_for_kbit_training,
+    get_peft_model,
+    LoraConfig,
+    TrainingArguments,
+)
+from transformers import AutoTokenizer
+from datasets import load_dataset
+from trl import SFTTrainer
+
+model_path = "meta-llama/Llama-2-7b-hf"
+
+# 1. Load quantized model
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_low_bit="nf4",
+    optimize_model=False,  # delay optimization until after PEFT wrapping
+    torch_dtype="auto",
+    modules_to_not_convert=["lm_head"],
+)
+model = model.to("xpu")
+
+# 2. Prepare for kbit training
+model = prepare_model_for_kbit_training(
+    model,
+    use_gradient_checkpointing=True,
+)
+
+# 3. Configure LoRA
+lora_config = LoraConfig(
+    r=8,
+    lora_alpha=32,
+    target_modules=["q_proj", "v_proj"],
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+    training_mode="qlora",
+)
+
+# 4. Wrap model with PEFT
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+
+# 5. Load tokenizer and dataset
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+tokenizer.pad_token = tokenizer.eos_token
+dataset = load_dataset("tatsu-lab/alpaca", split="train")
+
+# 6. Configure training
+training_args = TrainingArguments(
+    output_dir="./qlora-output",
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,
+    num_train_epochs=3,
+    learning_rate=2e-4,
+    logging_steps=10,
+    save_steps=100,
+    optim="adamw_torch",
+)
+
+# 7. Train
+trainer = SFTTrainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset,
+    tokenizer=tokenizer,
+    dataset_text_field="text",
+    max_seq_length=512,
+)
+trainer.train()
+
+# 8. Save adapter
+model.save_pretrained("./qlora-adapter")
+```
+
+```python lora-inference.py
+# Load adapter for inference
+from ipex_llm.transformers import AutoModelForCausalLM
+from ipex_llm.transformers.qlora import PeftModel
+from transformers import AutoTokenizer
+
+model_path = "meta-llama/Llama-2-7b-hf"
+adapter_path = "./qlora-adapter"
+
+# Load quantized base model
+base_model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_low_bit="nf4",
+)
+
+# Load LoRA adapter
+model = PeftModel.from_pretrained(base_model, adapter_path)
+model = model.to("xpu")
+
+tokenizer = AutoTokenizer.from_pretrained(model_path)
+inputs = tokenizer("### Instruction:\nExplain LoRA.\n\n### Response:", return_tensors="pt").to("xpu")
+output = model.generate(**inputs, max_new_tokens=256)
+print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+</CodeGroup>
+
+---
+
+## Supported training methods
+
+<AccordionGroup>
+  <Accordion title="LoRA — Low-Rank Adaptation">
+    Standard LoRA on BF16 base weights. Set `training_mode="lora"` in `LoraConfig`. Adapters are injected as `LoraBF16Linear` layers.
+
+    Best suited for: full-precision or BF16 base models where you want lightweight adapter training without quantizing the base weights.
+  </Accordion>
+
+  <Accordion title="QLoRA — Quantized LoRA">
+    LoRA adapters trained on top of a quantized (INT4/NF4) base model. Set `training_mode="qlora"` (default). Adapters are `LoraLowBitLinear` layers that forward through the quantized base layer.
+
+    Best suited for: memory-constrained GPU finetuning. Using `nf4` as the base quantization format typically gives the best quality.
+  </Accordion>
+
+  <Accordion title="QA-LoRA — Quantization-Aware LoRA">
+    Variant of QLoRA where the LoRA input is downsampled with average pooling (`qa_pool`) to match the quantization group size. Set `training_mode="qalora"`. This makes the adapter weights quantization-aware during training, which can improve quality when the quantized model is deployed.
+
+    Best suited for: scenarios where you want the LoRA adapter weights to remain compatible with lower-bit inference.
+  </Accordion>
+
+  <Accordion title="DPO — Direct Preference Optimization">
+    Use IPEX-LLM quantized models with TRL's `DPOTrainer`. Load the model with `load_in_low_bit`, prepare with `prepare_model_for_kbit_training`, then pass to `DPOTrainer` with a `LoraConfig` to add LoRA adapters.
+  </Accordion>
+
+  <Accordion title="ReLoRA — Restartable LoRA">
+    Periodic adapter merging and re-initialization for long training runs. Implemented via `ipex_llm.transformers.relora`. Allows training large models efficiently by keeping adapter rank small but merging frequently.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+Do not pass `fp16=True` to `TrainingArguments` when training on Intel hardware. The patched `TrainingArguments` in this module enforces `bf16=True` automatically. Using FP16 on Intel Arc GPUs can cause numerical instability.
+</Warning>

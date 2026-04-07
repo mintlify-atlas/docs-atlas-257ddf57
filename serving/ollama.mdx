@@ -1,0 +1,302 @@
+---
+title: "Ollama"
+description: "Run Ollama on Intel GPU with IPEX-LLM as the accelerated backend."
+---
+
+IPEX-LLM provides an accelerated C++ backend for [Ollama](https://github.com/ollama/ollama), letting you run the full Ollama toolchain — `ollama serve`, `ollama pull`, `ollama run`, and the REST API — on Intel GPUs including iGPU, Arc A-Series, Flex, and Max.
+
+<Note>
+  The current IPEX-LLM build tracks Ollama **v0.9.3**. The `ipex-llm[cpp]==2.2.0b20250629` release tracks Ollama **v0.6.2**.
+</Note>
+
+<Tip>
+  If you prefer a zero-installation path, download the **Ollama Portable Zip** — no conda, no pip, no oneAPI setup required. See the [portable zip option](#portable-zip-no-install-option) at the bottom of this page.
+</Tip>
+
+## Installation
+
+<Steps>
+  <Step title="Install ipex-llm[cpp]">
+    Create a fresh conda environment and install the `ipex-llm[cpp]` package. Run the commands for your OS.
+
+    <Tabs>
+      <Tab title="Linux">
+        ```bash
+        conda create -n llm-cpp python=3.11
+        conda activate llm-cpp
+        pip install --pre --upgrade ipex-llm[cpp]
+        ```
+      </Tab>
+      <Tab title="Windows">
+        Run these commands in **Miniforge Prompt**.
+
+        ```cmd
+        conda create -n llm-cpp python=3.11
+        conda activate llm-cpp
+        pip install --pre --upgrade ipex-llm[cpp]
+        ```
+
+        <Warning>
+          Starting from `ipex-llm[cpp]==2.2.0b20250207`, the oneAPI dependency on Windows switched from 2024.2.1 to 2025.0.1. You must create a **new** conda environment — upgrading in place may cause a `sycl8.dll not found` error.
+        </Warning>
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Initialize Ollama">
+    Activate the environment and run the initialization script. This creates a symbolic link to the `ollama` binary in your current directory.
+
+    <Tabs>
+      <Tab title="Linux">
+        ```bash
+        conda activate llm-cpp
+        init-ollama
+        ```
+      </Tab>
+      <Tab title="Windows">
+        Run with **administrator privilege** in Miniforge Prompt.
+
+        ```cmd
+        conda activate llm-cpp
+        init-ollama.bat
+        ```
+      </Tab>
+    </Tabs>
+
+    <Note>
+      If you upgrade `ipex-llm[cpp]` to a newer version, remove the old binary files first and re-run `init-ollama` / `init-ollama.bat`.
+    </Note>
+  </Step>
+
+  <Step title="Start Ollama serve">
+    Set environment variables for GPU acceleration and start the server.
+
+    <Tabs>
+      <Tab title="Linux">
+        ```bash
+        export OLLAMA_NUM_GPU=999
+        export no_proxy=localhost,127.0.0.1
+        export ZES_ENABLE_SYSMAN=1
+
+        source /opt/intel/oneapi/setvars.sh
+
+        # Optional: improves performance on most systems
+        export SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+
+        # Optional: restrict to a single GPU
+        export ONEAPI_DEVICE_SELECTOR=level_zero:0
+
+        ./ollama serve
+        ```
+      </Tab>
+      <Tab title="Windows">
+        Run in Miniforge Prompt.
+
+        ```cmd
+        set OLLAMA_NUM_GPU=999
+        set no_proxy=localhost,127.0.0.1
+        set ZES_ENABLE_SYSMAN=1
+
+        rem Optional: improves performance on most systems
+        set SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+
+        ollama serve
+        ```
+      </Tab>
+    </Tabs>
+
+    <Note>
+      Set `OLLAMA_NUM_GPU=999` to ensure all model layers run on the GPU. Without this, some layers may fall back to CPU.
+    </Note>
+
+    <Tip>
+      To accept connections from all network interfaces, start with `OLLAMA_HOST=0.0.0.0 ./ollama serve` instead of just `./ollama serve`.
+    </Tip>
+  </Step>
+
+  <Step title="Pull a model">
+    In a separate terminal, pull a model from the Ollama library. Keep the server running in the original terminal.
+
+    <Tabs>
+      <Tab title="Linux">
+        ```bash
+        ./ollama pull deepseek-r1:7b
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```cmd
+        ollama pull deepseek-r1:7b
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Using Ollama
+
+### Ollama REST API
+
+The Ollama server exposes a REST API on port `11434`. Use `curl` to verify inference is working.
+
+<Tabs>
+  <Tab title="Linux">
+    ```bash
+    curl http://localhost:11434/api/generate -d '{
+      "model": "deepseek-r1:7b",
+      "prompt": "Why is the sky blue?",
+      "stream": false
+    }'
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```cmd
+    curl http://localhost:11434/api/generate -d "{\"model\": \"deepseek-r1:7b\", \"prompt\": \"Why is the sky blue?\", \"stream\": false}"
+    ```
+  </Tab>
+</Tabs>
+
+### Run a GGUF model directly
+
+You can import a local GGUF file by creating an Ollama `Modelfile`:
+
+```text
+FROM ./mistral-7b-instruct-v0.1.Q4_K_M.gguf
+TEMPLATE [INST] {{ .Prompt }} [/INST]
+PARAMETER num_predict 64
+```
+
+Then create and run the model:
+
+<Tabs>
+  <Tab title="Linux">
+    ```bash
+    source /opt/intel/oneapi/setvars.sh
+    export no_proxy=localhost,127.0.0.1
+    ./ollama create example -f Modelfile
+    ./ollama run example
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```cmd
+    set no_proxy=localhost,127.0.0.1
+    ollama create example -f Modelfile
+    ollama run example
+    ```
+  </Tab>
+</Tabs>
+
+### Open WebUI
+
+You can pair Ollama with [Open WebUI](https://github.com/open-webui/open-webui) for a browser-based chat interface. With the Ollama server running, install and start Open WebUI:
+
+```bash
+# Install Node.js dependencies and build the frontend
+cd ~/open-webui/
+cp -RPp .env.example .env
+npm i && npm run build
+
+# Install Python backend dependencies
+cd ./backend
+pip install -r requirements.txt -U
+
+# Start the server
+export no_proxy=localhost,127.0.0.1
+bash start.sh
+```
+
+Open `http://localhost:8080` in your browser. Go to **Settings → Connections** to confirm the Ollama base URL points to `http://localhost:11434`.
+
+## Environment variable reference
+
+| Variable | Description |
+|---|---|
+| `OLLAMA_NUM_GPU` | Set to `999` to offload all layers to GPU |
+| `OLLAMA_KEEP_ALIVE` | Set to `-1` to keep models loaded indefinitely |
+| `OLLAMA_NUM_PARALLEL` | Set to `1` to reduce VRAM usage |
+| `OLLAMA_NUM_CTX` | Context window size (default: 2048) |
+| `ONEAPI_DEVICE_SELECTOR` | Select a specific GPU, e.g. `level_zero:0` |
+| `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS` | Set to `1` for potential throughput improvement |
+
+## Portable zip (no-install option)
+
+The **Ollama Portable Zip** bundles all dependencies and requires no conda or oneAPI setup.
+
+<Tabs>
+  <Tab title="Windows">
+    <Steps>
+      <Step title="Download">
+        Download the portable zip from the [IPEX-LLM releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly) and extract it.
+      </Step>
+      <Step title="Start Ollama serve">
+        Open Command Prompt, navigate to the extracted folder, and run:
+
+        ```cmd
+        start-ollama.bat
+        ```
+
+        A new window will appear showing the Ollama server log.
+      </Step>
+      <Step title="Run a model">
+        In the same Command Prompt (not the pop-up window):
+
+        ```cmd
+        ollama run deepseek-r1:7b
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Linux">
+    <Steps>
+      <Step title="Download and extract">
+        Download the portable tgz from the [IPEX-LLM releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly) and extract it:
+
+        ```bash
+        tar -xvf ipex-llm-ollama-*.tgz
+        ```
+      </Step>
+      <Step title="Start Ollama serve">
+        ```bash
+        cd PATH/TO/EXTRACTED/FOLDER
+        ./start-ollama.sh
+        ```
+      </Step>
+      <Step title="Run a model">
+        Open a second terminal, navigate to the same folder, and run:
+
+        ```bash
+        ./ollama run deepseek-r1:7b
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+<Tip>
+  To download models from ModelScope (faster in some regions), set `OLLAMA_MODEL_SOURCE=modelscope` before running `ollama run`.
+</Tip>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="exit status 0xc0000135 or libmkl_core.so.2 not found">
+    This indicates a missing SYCL dependency. On Linux, run `source /opt/intel/oneapi/setvars.sh` before starting Ollama. On Windows, ensure you are in the correct conda environment with oneAPI pip dependencies installed.
+  </Accordion>
+  <Accordion title="Model reloads every few minutes">
+    Ollama unloads models from GPU memory every 5 minutes by default. Set `OLLAMA_KEEP_ALIVE=-1` before starting `ollama serve` to keep the model loaded.
+  </Accordion>
+  <Accordion title="Program hangs during initial model load (Windows)">
+    On first launch, Ollama may appear stuck during model loading. Try pressing the space bar or typing any character in the server terminal to unblock it.
+  </Accordion>
+  <Accordion title="ollama serve has no output after ollama run">
+    Multiple Ollama processes may be conflicting. On Linux, run `systemctl stop ollama` to stop any background instance. On Windows, set `OLLAMA_HOST=0.0.0.0` to ensure commands route to the current server.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="llama.cpp" icon="terminal" href="/serving/llama-cpp">
+    Use the llama.cpp CLI and server directly on Intel GPU.
+  </Card>
+  <Card title="vLLM" icon="server" href="/serving/vllm">
+    High-throughput OpenAI-compatible serving with vLLM.
+  </Card>
+</CardGroup>

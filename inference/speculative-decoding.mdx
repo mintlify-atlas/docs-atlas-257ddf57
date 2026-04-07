@@ -1,0 +1,216 @@
+---
+title: "Speculative decoding"
+description: "Speed up FP16 and BF16 LLM inference by ~30% on Intel GPU and CPU with IPEX-LLM's self-speculative decoding — no separate draft model required."
+---
+
+## How speculative decoding works
+
+Standard speculative decoding uses a small **draft model** to quickly generate multiple candidate tokens, which are then verified in parallel by the larger **target model**. When the draft model is accurate, the target model confirms several tokens in a single forward pass, increasing throughput.
+
+The practical problem: finding and maintaining a well-matched draft model is difficult, especially when the target model has been fine-tuned on custom data.
+
+## Self-speculative decoding in IPEX-LLM
+
+IPEX-LLM implements a variant called **self-speculative decoding**, based on the paper [Draft & Verify](https://arxiv.org/abs/2309.08168). Instead of using a separate draft model:
+
+1. IPEX-LLM automatically creates an INT4 version of the original FP16/BF16 model.
+2. The INT4 model is used internally as the draft model.
+3. The original FP16/BF16 model verifies the draft tokens.
+
+This delivers approximately **~30% reduction in generation latency** on Intel GPU (FP16) and Intel CPU (BF16), with no extra model downloads, no fine-tuning, and no change to the inference interface beyond two extra parameters.
+
+<Note>
+  Self-speculative decoding requires the target model to be loaded in `fp16` (on GPU) or `bf16` (on CPU). It is not compatible with INT4/INT8 as the primary precision because the draft and target models must differ in precision.
+</Note>
+
+---
+
+## Enabling speculative decoding
+
+Add two parameters to your existing `from_pretrained` call:
+
+- `load_in_low_bit="fp16"` (GPU) or `load_in_low_bit="bf16"` (CPU)
+- `speculative=True`
+
+That is the only code change required.
+
+---
+
+## GPU example (FP16)
+
+```python
+import torch
+from ipex_llm.transformers import AutoModelForCausalLM
+from transformers import LlamaTokenizer
+
+model_path = "meta-llama/Llama-2-7b-chat-hf"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    optimize_model=True,
+    torch_dtype=torch.float16,
+    load_in_low_bit="fp16",   # Target model in FP16
+    speculative=True,          # Enable self-speculative decoding
+    trust_remote_code=True,
+    use_cache=True,
+)
+model = model.to("xpu")
+
+tokenizer = LlamaTokenizer.from_pretrained(model_path)
+
+with torch.inference_mode():
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(model.device)
+
+    # Warmup
+    _ = model.generate(input_ids, max_new_tokens=128, do_sample=False)
+
+    # Speculative decoding inference
+    output = model.generate(input_ids, max_new_tokens=128, do_sample=False)
+    torch.xpu.synchronize()
+
+    print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+---
+
+## CPU example (BF16)
+
+On the latest Intel Xeon processors, use `bf16` instead of `fp16`:
+
+```python
+import torch
+from ipex_llm.transformers import AutoModelForCausalLM
+from transformers import LlamaTokenizer
+
+model_path = "meta-llama/Llama-2-7b-chat-hf"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    optimize_model=True,
+    torch_dtype=torch.bfloat16,
+    load_in_low_bit="bf16",   # Target model in BF16 for CPU
+    speculative=True,          # Enable self-speculative decoding
+    trust_remote_code=True,
+    use_cache=True,
+)
+
+tokenizer = LlamaTokenizer.from_pretrained(model_path)
+
+with torch.inference_mode():
+    inputs = tokenizer(prompt, return_tensors="pt")
+    input_ids = inputs.input_ids.to(model.device)
+    attention_mask = inputs.attention_mask.to(model.device)
+
+    # Warmup
+    _ = model.generate(
+        input_ids, max_new_tokens=128, attention_mask=attention_mask, do_sample=False
+    )
+
+    # Speculative decoding inference
+    output = model.generate(
+        input_ids, max_new_tokens=128, attention_mask=attention_mask, do_sample=False
+    )
+
+    print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+---
+
+## Supported model families
+
+Self-speculative decoding has been validated on the following model types:
+
+<Tabs>
+  <Tab title="GPU">
+    - Llama 2 (7B, 13B, 70B)
+    - Mistral 7B
+    - Qwen series
+    - Baichuan 2
+    - ChatGLM3
+    - GPT-J
+  </Tab>
+  <Tab title="CPU">
+    - Llama 2 (7B, 13B)
+    - Llama 3
+    - Mistral 7B
+    - Mixtral 8x7B
+    - Qwen series
+    - Baichuan 2
+    - ChatGLM3
+    - StarCoder
+    - Vicuna
+    - Ziya
+  </Tab>
+</Tabs>
+
+---
+
+## Parameters
+
+<ParamField path="speculative" type="boolean" default="False">
+  Enable self-speculative decoding. The model internally creates an INT4 draft model and uses it to generate candidate tokens, which the FP16/BF16 model then verifies.
+</ParamField>
+
+<ParamField path="load_in_low_bit" type="string">
+  Must be `"fp16"` when running on Intel GPU, or `"bf16"` when running on Intel CPU. Other precisions are not compatible with speculative decoding.
+</ParamField>
+
+<ParamField path="torch_dtype" type="dtype">
+  Set to `torch.float16` for GPU or `torch.bfloat16` for CPU. Should match the value passed to `load_in_low_bit`.
+</ParamField>
+
+<ParamField path="do_sample" type="boolean" default="False">
+  Speculative decoding requires greedy decoding (`do_sample=False`). Sampling-based generation does not benefit from this optimization.
+</ParamField>
+
+---
+
+## Understanding the speedup
+
+Speculative decoding reduces the number of forward passes through the full FP16/BF16 model. The INT4 draft model runs several times faster, so generating and verifying a batch of draft tokens costs less total compute than running the full model token by token.
+
+The speedup depends on the **draft acceptance rate** — how often the large model agrees with the draft model's candidates. For typical instruction-following prompts, the acceptance rate is high enough to achieve ~30% end-to-end latency reduction.
+
+<Tip>
+  Speculative decoding is most effective with longer outputs. For very short generations (fewer than 20 tokens), the overhead of draft verification may outweigh the benefit. Evaluate on your specific workload.
+</Tip>
+
+---
+
+## `generate()` call checklist
+
+```python
+output = model.generate(
+    input_ids,
+    max_new_tokens=128,
+    do_sample=False,     # Required: greedy decoding only
+)
+```
+
+<Warning>
+  Do not set `do_sample=True` or use `temperature`/`top_p` sampling when speculative decoding is enabled. The verification step assumes greedy acceptance, so sampled generation will produce incorrect results.
+</Warning>
+
+---
+
+## Performance metrics
+
+After generation, the model exposes two attributes for profiling:
+
+```python
+print(f"Tokens generated: {model.n_token_generated}")
+print(f"First token latency: {model.first_token_time:.4f}s")
+```
+
+<Note>
+  On CPU, `n_token_generated` and `first_token_time` are only populated when the input prompt is at least 256 tokens long. Shorter prompts fall back to standard `generate()` behavior.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="GPU inference" icon="microchip" href="/inference/gpu-inference">
+    Full guide to running on Intel Arc, Flex, and Max GPUs.
+  </Card>
+  <Card title="Transformers API" icon="code" href="/inference/transformers-api">
+    Full parameter reference for AutoModelForCausalLM.from_pretrained.
+  </Card>
+</CardGroup>

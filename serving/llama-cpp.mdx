@@ -1,0 +1,304 @@
+---
+title: "llama.cpp"
+description: "Run llama.cpp on Intel GPU using IPEX-LLM as the accelerated SYCL backend."
+---
+
+IPEX-LLM provides an accelerated C++ backend for [llama.cpp](https://github.com/ggerganov/llama.cpp), enabling fast GGUF model inference on Intel GPUs including iGPU, Arc A-Series, Flex, and Max — with no changes to the standard llama.cpp command-line interface.
+
+<Note>
+  The current IPEX-LLM build tracks llama.cpp commit **4ad2436**. The `ipex-llm[cpp]==2.2.0b20250629` release tracks commit **d7cfe1f**.
+</Note>
+
+<Tip>
+  For a zero-installation path, use the **llama.cpp Portable Zip** which bundles all dependencies. See the [portable zip option](#portable-zip-no-install-option) at the bottom of this page.
+</Tip>
+
+## Prerequisites
+
+<Tabs>
+  <Tab title="Linux">
+    Ubuntu 20.04 or later is required (Ubuntu 22.04 recommended). You need:
+
+    - Intel GPU driver for Ubuntu 22.04 (or follow the [Intel client GPU driver installation guide](https://dgpu-docs.intel.com/driver/client/overview.html) for newer Ubuntu versions)
+    - Intel oneAPI Base Toolkit 2025.0
+  </Tab>
+  <Tab title="Windows">
+    Ensure your GPU driver version is **31.0.101.5522 or newer**. Older drivers may produce garbled output.
+  </Tab>
+</Tabs>
+
+## Installation
+
+<Steps>
+  <Step title="Install ipex-llm[cpp]">
+    Create a fresh conda environment and install the package.
+
+    <Tabs>
+      <Tab title="Linux">
+        ```bash
+        conda create -n llm-cpp python=3.11
+        conda activate llm-cpp
+        pip install --pre --upgrade ipex-llm[cpp]
+        ```
+      </Tab>
+      <Tab title="Windows">
+        Run in Miniforge Prompt.
+
+        ```cmd
+        conda create -n llm-cpp python=3.11
+        conda activate llm-cpp
+        pip install --pre --upgrade ipex-llm[cpp]
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Create a working directory and initialize llama.cpp">
+    Create a directory, enter it, and run the initialization script to symlink the llama.cpp binaries.
+
+    ```bash
+    mkdir llama-cpp
+    cd llama-cpp
+    ```
+
+    <Tabs>
+      <Tab title="Linux">
+        ```bash
+        init-llama-cpp
+        ```
+
+        After initialization you will see symlinks to `llama-cli`, `llama-server`, and other executables, plus a `convert.py` script.
+      </Tab>
+      <Tab title="Windows">
+        Run with **administrator privilege** in Miniforge Prompt.
+
+        ```cmd
+        init-llama-cpp.bat
+        ```
+      </Tab>
+    </Tabs>
+
+    <Tip>
+      `init-llama-cpp` links binaries to your current directory. Run it again if you need to use the binaries from a different directory, or after upgrading `ipex-llm[cpp]`.
+    </Tip>
+  </Step>
+
+  <Step title="Configure runtime environment variables">
+    Set these variables before running any llama.cpp command.
+
+    <Tabs>
+      <Tab title="Linux">
+        ```bash
+        source /opt/intel/oneapi/setvars.sh
+
+        # Optional: improves performance on most systems
+        export SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+
+        # Optional: restrict inference to a single GPU
+        export ONEAPI_DEVICE_SELECTOR=level_zero:0
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```cmd
+        rem Optional: improves performance on most systems
+        set SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Running GGUF models
+
+### Download a model
+
+Download a GGUF model to your working directory. For example, `mistral-7b-instruct-v0.1.Q4_K_M.gguf` from [TheBloke/Mistral-7B-Instruct-v0.1-GGUF](https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF).
+
+### Run with llama-cli
+
+<Tabs>
+  <Tab title="Linux">
+    ```bash
+    ./llama-cli \
+      -m mistral-7b-instruct-v0.1.Q4_K_M.gguf \
+      -n 32 \
+      --prompt "Once upon a time, there existed a little girl who liked to have adventures." \
+      -c 1024 \
+      -t 8 \
+      -e \
+      -ngl 99 \
+      --color \
+      -no-cnv
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```cmd
+    llama-cli -m mistral-7b-instruct-v0.1.Q4_K_M.gguf -n 32 ^
+      --prompt "Once upon a time, there existed a little girl who liked to have adventures." ^
+      -c 1024 -t 8 -e -ngl 99 --color -no-cnv
+    ```
+  </Tab>
+</Tabs>
+
+Key parameters:
+
+| Parameter | Description |
+|---|---|
+| `-m` | Path to the GGUF model file |
+| `-ngl 99` | Number of layers to offload to GPU. Use a large value like `99` to offload all layers |
+| `-c` | Context size in tokens |
+| `-n` | Number of tokens to generate |
+| `-t` | Number of CPU threads |
+
+<Note>
+  If you see a `prompt is too long` error, increase the `-c` value. If inference hangs after loading tensors, add `--no-mmap`.
+</Note>
+
+### Run the HTTP server
+
+`llama-server` starts an OpenAI-compatible HTTP server on port 8080:
+
+<Tabs>
+  <Tab title="Linux">
+    ```bash
+    ./llama-server \
+      -m mistral-7b-instruct-v0.1.Q4_K_M.gguf \
+      -c 2048 \
+      -ngl 99 \
+      --host 0.0.0.0 \
+      --port 8080
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```cmd
+    llama-server -m mistral-7b-instruct-v0.1.Q4_K_M.gguf -c 2048 -ngl 99 --host 0.0.0.0 --port 8080
+    ```
+  </Tab>
+</Tabs>
+
+Send a request:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{"role": "user", "content": "What is AI?"}],
+    "max_tokens": 128
+  }'
+```
+
+## FlashMoE for DeepSeek V3/R1 671B
+
+**FlashMoE** is a specialized tool built on llama.cpp and optimized for mixture-of-experts models like DeepSeek V3 and R1 671B. It is available in the Linux portable zip and allows you to run these large models on 1–8 Arc A770 GPUs with CPU offload.
+
+**Requirements:**
+- 380 GB CPU memory
+- 1–8 Intel Arc A770 GPUs
+- 500 GB disk space
+
+**Supported GGUF models:**
+- `DeepSeek-V3-Q4_K_M`, `DeepSeek-V3-Q6_K`
+- `DeepSeek-R1-Q4_K_M`, `DeepSeek-R1-Q6_K`
+- `DeepSeek-V3-0324-GGUF/Q4_K_M`, `DeepSeek-V3-0324-GGUF/Q6_K`
+
+<Warning>
+  Do not source oneAPI when using FlashMoE — it ships its own runtime libraries.
+</Warning>
+
+### CLI inference
+
+```bash
+./flash-moe \
+  -m /PATH/TO/DeepSeek-R1-Q4_K_M-00001-of-00009.gguf \
+  --prompt "What's AI?" \
+  -no-cnv
+```
+
+<Note>
+  For a single Arc A770, reduce context length to avoid OOM: add `-c 1024` to the command.
+</Note>
+
+### Serving mode
+
+```bash
+./flash-moe \
+  -m /PATH/TO/DeepSeek-R1-Q4_K_M-00001-of-00009.gguf \
+  --serve \
+  -n 512 \
+  -np 2 \
+  -c 4096
+```
+
+Parameters: `-n` = max tokens to predict, `-np` = parallel sequences, `-c` = total context size.
+
+The server starts at `http://127.0.0.1:8080`.
+
+## Portable zip (no-install option)
+
+<Tabs>
+  <Tab title="Windows">
+    <Steps>
+      <Step title="Download and extract">
+        Download the portable zip from the [IPEX-LLM releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly) and extract it.
+      </Step>
+      <Step title="Open a terminal in the extracted folder">
+        ```cmd
+        cd /d PATH\TO\EXTRACTED\FOLDER
+        ```
+      </Step>
+      <Step title="Run a GGUF model">
+        ```cmd
+        llama-cli.exe -m PATH\TO\DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf ^
+          -n 2048 -t 8 -e -ngl 99 --color -c 2500 --temp 0 -no-cnv ^
+          -p "What is the capital of France?"
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Linux">
+    <Steps>
+      <Step title="Download and extract">
+        Download the portable tgz from the [IPEX-LLM releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly) and extract it.
+      </Step>
+      <Step title="Enter the extracted folder">
+        ```bash
+        cd PATH/TO/EXTRACTED/FOLDER
+        ```
+      </Step>
+      <Step title="Run a GGUF model">
+        ```bash
+        ./llama-cli \
+          -m /PATH/TO/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf \
+          -n 2048 -t 8 -e -ngl 99 --color -c 2500 --temp 0 -no-cnv \
+          -p "What is the capital of France?"
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="DeviceList is empty (-30 PI_ERROR_INVALID_VALUE)">
+    Devices starting with `[ext_oneapi_level_zero]` were not found. Ensure `level-zero` is installed and run `source /opt/intel/oneapi/setvars.sh` before your command.
+  </Accordion>
+  <Accordion title="gemm: cannot allocate memory on host">
+    This is caused by pip-installed oneAPI libraries conflicting with apt-installed ones. Avoid installing `dpcpp-cpp-rt`, `mkl-dpcpp`, or `onednn` via pip on Linux.
+  </Accordion>
+  <Accordion title="Core dump with integrated and discrete GPU both present">
+    When both iGPU and dGPU are visible, llama.cpp may crash. Specify a single device: `export ONEAPI_DEVICE_SELECTOR=level_zero:0`.
+  </Accordion>
+  <Accordion title="Garbage output on Windows">
+    Check that your GPU driver version is **31.0.101.5522 or newer**.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Ollama" icon="box" href="/serving/ollama">
+    Run Ollama with the IPEX-LLM backend for chat and REST API access.
+  </Card>
+  <Card title="vLLM" icon="server" href="/serving/vllm">
+    High-throughput OpenAI-compatible serving with continuous batching.
+  </Card>
+</CardGroup>

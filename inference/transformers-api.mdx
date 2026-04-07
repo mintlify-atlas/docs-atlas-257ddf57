@@ -1,0 +1,278 @@
+---
+title: "Transformers-style API"
+description: "Load and run any Hugging Face Transformers model with INT4/INT8/FP8 optimization using IPEX-LLM's drop-in AutoModel API."
+---
+
+IPEX-LLM provides a `transformers`-compatible API in `ipex_llm.transformers`. You can switch from the standard Hugging Face `transformers` library with a one-line import change and immediately gain low-bit quantization, faster inference, and lower memory usage on Intel hardware.
+
+## Supported AutoModel classes
+
+The following classes are available under `ipex_llm.transformers` and share the same interface as their Hugging Face counterparts:
+
+| Class | Use case |
+|---|---|
+| `AutoModelForCausalLM` | Causal language models (LLaMA, Qwen, Mistral, …) |
+| `AutoModel` | General-purpose models |
+| `AutoModelForSpeechSeq2Seq` | Speech-to-text (Whisper, …) |
+| `AutoModelForSeq2SeqLM` | Encoder-decoder LMs (T5, Flan-T5, …) |
+| `AutoModelForSequenceClassification` | Text classification |
+| `AutoModelForMaskedLM` | Masked language models (BERT, …) |
+| `AutoModelForQuestionAnswering` | Extractive QA |
+| `AutoModelForTokenClassification` | Token classification / NER |
+
+All classes expose the same `from_pretrained`, `load_low_bit`, and `from_gguf` class methods described below.
+
+---
+
+## Loading a model
+
+### Basic INT4 loading
+
+Pass `load_in_4bit=True` to convert all linear layers to symmetric INT4 at load time:
+
+```python
+from ipex_llm.transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-2-7b-chat-hf",
+    load_in_4bit=True,
+)
+```
+
+<Tip>
+`from_pretrained` downloads the model from Hugging Face Hub on first use and caches it under `~/.cache/huggingface`. Pass a local directory path to skip the download.
+</Tip>
+
+### Choosing a precision with `load_in_low_bit`
+
+For finer control, use `load_in_low_bit` instead of `load_in_4bit`:
+
+<Tabs>
+  <Tab title="INT4 (sym)">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "/path/to/model",
+        load_in_low_bit="sym_int4",  # default when load_in_4bit=True
+    )
+    ```
+  </Tab>
+  <Tab title="INT4 (asym)">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "/path/to/model",
+        load_in_low_bit="asym_int4",
+    )
+    ```
+  </Tab>
+  <Tab title="INT8">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "/path/to/model",
+        load_in_low_bit="sym_int8",
+    )
+    ```
+  </Tab>
+  <Tab title="FP8">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "/path/to/model",
+        load_in_low_bit="fp8",       # or "fp8_e4m3" / "fp8_e5m2"
+    )
+    ```
+  </Tab>
+  <Tab title="FP4 / NF4">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "/path/to/model",
+        load_in_low_bit="fp4",   # 4-bit float
+        # load_in_low_bit="nf4", # 4-bit NormalFloat
+    )
+    ```
+  </Tab>
+  <Tab title="FP16 / BF16">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "/path/to/model",
+        load_in_low_bit="fp16",  # or "bf16"
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Loading from a local path
+
+```python
+from ipex_llm.transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    "/path/to/local/llama-2-7b-chat",
+    load_in_4bit=True,
+)
+```
+
+---
+
+## `from_pretrained` parameters
+
+<ParamField path="load_in_4bit" type="boolean" default="False">
+  Convert linear layer weights to symmetric INT4. Equivalent to `load_in_low_bit="sym_int4"`. For GPTQ models, loads asymmetric INT4 instead.
+</ParamField>
+
+<ParamField path="load_in_low_bit" type="string">
+  Target precision for linear weights. Options: `'sym_int4'`, `'asym_int4'`, `'sym_int5'`, `'asym_int5'`, `'sym_int8'`, `'nf3'`, `'nf4'`, `'fp4'`, `'fp8'`, `'fp8_e4m3'`, `'fp8_e5m2'`, `'fp6'`, `'fp16'`, `'bf16'`, `'fp6_k'`, and several GGUF formats (`'gguf_iq2_xxs'`, `'gguf_q4k_m'`, …).
+</ParamField>
+
+<ParamField path="optimize_model" type="boolean" default="True">
+  Apply additional graph-level and kernel-level optimizations on top of quantization.
+</ParamField>
+
+<ParamField path="speculative" type="boolean" default="False">
+  Enable self-speculative decoding. Requires `load_in_low_bit="fp16"` on GPU or `"bf16"` on CPU. See [Speculative decoding](/inference/speculative-decoding).
+</ParamField>
+
+<ParamField path="cpu_embedding" type="boolean" default="False">
+  Keep the embedding layer on CPU instead of moving it to the accelerator. Recommended for Intel iGPU users to save GPU memory.
+</ParamField>
+
+<ParamField path="modules_to_not_convert" type="list[str]" default="None">
+  Names of `nn.Module` layers to skip during quantization (e.g. `["lm_head"]`).
+</ParamField>
+
+<ParamField path="mixed_precision" type="boolean" default="False">
+  Use `sym_int8` for the `lm_head` layer when the rest of the model uses `sym_int4` or `asym_int4`, improving output quality at minimal extra cost.
+</ParamField>
+
+<ParamField path="embedding_qtype" type="string" default="None">
+  Apply low-bit quantization to `nn.Embedding` layers. Options: `'q2_k'`, `'q4_k'`.
+</ParamField>
+
+<ParamField path="pipeline_parallel_stages" type="int" default="1">
+  Number of GPUs to use for pipeline-parallel inference. Set to a value greater than `1` to distribute the model across multiple Intel GPUs. See [GPU inference](/inference/gpu-inference).
+</ParamField>
+
+<ParamField path="model_hub" type="string" default="'huggingface'">
+  Model registry to download from. Options: `'huggingface'`, `'modelscope'`.
+</ParamField>
+
+<ParamField path="imatrix" type="string" default="None">
+  Path to an importance matrix file for improved quantization (used with GGUF-style methods).
+</ParamField>
+
+---
+
+## Running inference
+
+Load a tokenizer using the standard `transformers` API — no changes needed:
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+```
+
+Run generation inside `torch.inference_mode()`:
+
+```python
+import torch
+
+with torch.inference_mode():
+    prompt = "Q: What is CPU?\nA:"
+    input_ids = tokenizer.encode(prompt, return_tensors="pt")
+
+    output = model.generate(input_ids, max_new_tokens=32)
+    output_str = tokenizer.decode(output[0], skip_special_tokens=True)
+    print(output_str)
+```
+
+---
+
+## Saving and loading optimized models
+
+Loading and quantizing a large model is time-consuming. Save the optimized model once, then reload it quickly on subsequent runs.
+
+<Steps>
+  <Step title="Save the optimized model">
+    ```python
+    model.save_low_bit("./llama-2-ipex-llm-4-bit")
+    tokenizer.save_pretrained("./llama-2-ipex-llm-4-bit")
+    ```
+  </Step>
+  <Step title="Reload from disk">
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+    from transformers import AutoTokenizer
+
+    model = AutoModelForCausalLM.load_low_bit("./llama-2-ipex-llm-4-bit")
+    tokenizer = AutoTokenizer.from_pretrained("./llama-2-ipex-llm-4-bit")
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Saved models are platform-independent — you can save on Linux and load on Windows, or vice versa.
+</Note>
+
+---
+
+## Loading GGUF models
+
+IPEX-LLM can load `.gguf` files directly and return an optimized model plus a Hugging Face tokenizer:
+
+```python
+from ipex_llm.transformers import AutoModelForCausalLM
+
+model, tokenizer = AutoModelForCausalLM.from_gguf(
+    fpath="/path/to/model.gguf",
+    optimize_model=True,
+    cpu_embedding=False,
+    low_bit="sym_int4",
+)
+```
+
+---
+
+## Complete example
+
+The following end-to-end snippet loads Llama 2 in INT4, runs one inference pass, and prints the result:
+
+```python
+import torch
+from ipex_llm.transformers import AutoModelForCausalLM
+from transformers import LlamaTokenizer
+
+model_path = "meta-llama/Llama-2-7b-chat-hf"
+
+# Load with INT4 optimization
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_4bit=True,
+    optimize_model=True,
+    trust_remote_code=True,
+    use_cache=True,
+)
+
+# Standard transformers tokenizer
+tokenizer = LlamaTokenizer.from_pretrained(model_path)
+
+# Inference
+with torch.inference_mode():
+    prompt = "Q: What is AI?\nA:"
+    input_ids = tokenizer.encode(prompt, return_tensors="pt")
+    output = model.generate(input_ids, max_new_tokens=64)
+    print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+<CardGroup cols={2}>
+  <Card title="GPU inference" icon="microchip" href="/inference/gpu-inference">
+    Move the model to `xpu` to run on Intel Arc, Flex, or Max GPUs.
+  </Card>
+  <Card title="Speculative decoding" icon="bolt" href="/inference/speculative-decoding">
+    Enable self-speculative decoding for ~30% faster generation.
+  </Card>
+  <Card title="PyTorch API" icon="code" href="/inference/pytorch-api">
+    Optimize any PyTorch model with a single `optimize_model` call.
+  </Card>
+  <Card title="NPU inference" icon="cpu" href="/inference/npu-inference">
+    Run models on Intel NPU with the dedicated NPU API.
+  </Card>
+</CardGroup>

@@ -1,0 +1,398 @@
+---
+title: "QLoRA finetuning"
+description: "Finetune LLMs on Intel GPU using QLoRA, LoRA, QA-LoRA, or DPO with IPEX-LLM's 4-bit NF4 quantization and HuggingFace PEFT-compatible API."
+---
+
+IPEX-LLM provides a drop-in replacement for the HuggingFace PEFT training API that works with Intel XPU devices. The key difference from a standard QLoRA setup is that you import `prepare_model_for_kbit_training` and `get_peft_model` from `ipex_llm.transformers.qlora` rather than from `peft` directly.
+
+## Installation
+
+```bash
+conda create -n llm python=3.11
+conda activate llm
+
+# Install IPEX-LLM with XPU support
+pip install --pre --upgrade ipex-llm[xpu] \
+    --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+
+# Training dependencies
+pip install transformers==4.45.0 "trl<0.12.0" datasets
+pip install peft==0.10.0
+pip install bitsandbytes==0.45.1 scipy
+
+# Required for multi-GPU distributed finetuning
+pip install oneccl_bind_pt==2.1.100 \
+    --index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+```
+
+Then source the Intel oneAPI environment variables:
+
+```bash
+source /opt/intel/oneapi/setvars.sh
+```
+
+<Note>
+  The `source /opt/intel/oneapi/setvars.sh` step is required for APT-installed or offline-installed oneAPI. Skip it if you installed oneAPI via pip.
+</Note>
+
+## QLoRA finetuning step by step
+
+<Steps>
+  <Step title="Load the model with NF4 quantization">
+    Load the base model using `ipex_llm.transformers.AutoModelForCausalLM` with `load_in_low_bit="nf4"`. According to the [QLoRA paper](https://arxiv.org/abs/2305.14314), NF4 yields better model quality than INT4 for finetuning. Move the model to XPU after loading.
+
+    ```python
+    import torch
+    from ipex_llm.transformers import AutoModelForCausalLM
+    from transformers import AutoTokenizer
+
+    model_path = "meta-llama/Llama-2-7b-hf"
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        load_in_low_bit="nf4",
+        optimize_model=False,
+        torch_dtype=torch.float16,
+        modules_to_not_convert=["lm_head"],
+    )
+    model = model.to('xpu')
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    # Llama tokenizer has no pad token by default
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    ```
+
+    <Tip>
+      You can also pass a `BitsAndBytesConfig` instead of `load_in_low_bit`:
+      ```python
+      from transformers import BitsAndBytesConfig
+
+      bnb_config = BitsAndBytesConfig(
+          load_in_4bit=True,
+          bnb_4bit_use_double_quant=False,
+          bnb_4bit_quant_type="nf4",
+          bnb_4bit_compute_dtype=torch.bfloat16,
+      )
+      model = AutoModelForCausalLM.from_pretrained(model_path, quantization_config=bnb_config)
+      model = model.to('xpu')
+      ```
+    </Tip>
+  </Step>
+
+  <Step title="Prepare the model for k-bit training">
+    Call `prepare_model_for_kbit_training` from `ipex_llm.transformers.qlora`. This freezes the base model weights, casts non-integer leaf modules to float32, and optionally enables gradient checkpointing to reduce memory usage at the cost of slightly slower backward passes.
+
+    ```python
+    from ipex_llm.transformers.qlora import prepare_model_for_kbit_training
+
+    # use_gradient_checkpointing=True reduces GPU memory but slows training
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    ```
+  </Step>
+
+  <Step title="Create a LoRA config and wrap the model">
+    Import `get_peft_model` from `ipex_llm.transformers.qlora` — **not** from `peft`. This wraps `LoraModel._create_new_module` to produce `LoraLowBitLinear` layers that work correctly on Intel XPU and casts LoRA weights to BF16.
+
+    ```python
+    from ipex_llm.transformers.qlora import get_peft_model
+    from peft import LoraConfig
+
+    config = LoraConfig(
+        r=8,
+        lora_alpha=32,
+        target_modules=["q_proj", "k_proj", "v_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, config)
+    model.print_trainable_parameters()
+    ```
+
+    For LoRA (BF16, no quantization), set `training_mode="lora"` in the config:
+
+    ```python
+    from ipex_llm.transformers.qlora import get_peft_model, LoraConfig
+
+    config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "up_proj", "down_proj", "gate_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        training_mode="lora",  # BF16 base weights instead of NF4
+    )
+    model = get_peft_model(model, config)
+    ```
+
+    For QA-LoRA, set `training_mode="qalora"`. This applies average pooling in the LoRA forward pass to match the quantization group size.
+  </Step>
+
+  <Step title="Train with HuggingFace Trainer or SFTTrainer">
+    The IPEX-LLM PEFT model is compatible with both `transformers.Trainer` and TRL's `SFTTrainer`. Use `bf16=True` and `optim="adamw_hf"` (paged Adam optimizers are not yet supported).
+
+    <Tabs>
+      <Tab title="transformers.Trainer">
+        ```python
+        import transformers
+        from datasets import load_dataset
+
+        dataset = load_dataset("yahma/alpaca-cleaned")
+        # use a subset for illustration
+        data = dataset["train"].train_test_split(train_size=0.1, shuffle=False)
+
+        tokenizer.pad_token_id = 0
+        tokenizer.padding_side = "left"
+
+        trainer = transformers.Trainer(
+            model=model,
+            train_dataset=data["train"],
+            args=transformers.TrainingArguments(
+                per_device_train_batch_size=4,
+                gradient_accumulation_steps=1,
+                warmup_steps=20,
+                max_steps=200,
+                learning_rate=2e-5,
+                save_steps=100,
+                bf16=True,
+                logging_steps=20,
+                output_dir="outputs",
+                optim="adamw_hf",
+            ),
+            data_collator=transformers.DataCollatorForSeq2Seq(
+                tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+            ),
+        )
+        model.config.use_cache = False
+        result = trainer.train()
+        print(result)
+        ```
+      </Tab>
+      <Tab title="TRL SFTTrainer">
+        ```python
+        import transformers
+        from trl import SFTTrainer
+        from datasets import load_dataset
+
+        dataset = load_dataset("yahma/alpaca-cleaned")
+        data = dataset["train"].train_test_split(train_size=0.1, shuffle=False)
+
+        trainer = SFTTrainer(
+            model=model,
+            train_dataset=data["train"],
+            args=transformers.TrainingArguments(
+                per_device_train_batch_size=4,
+                gradient_accumulation_steps=1,
+                warmup_steps=20,
+                max_steps=200,
+                learning_rate=2e-5,
+                save_steps=100,
+                bf16=True,
+                logging_steps=20,
+                output_dir="outputs",
+                optim="adamw_hf",
+                gradient_checkpointing=True,
+            ),
+            dataset_text_field="instruction",
+            data_collator=transformers.DataCollatorForSeq2Seq(
+                tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
+            ),
+        )
+        model.config.use_cache = False
+        result = trainer.train()
+        print(result)
+        ```
+      </Tab>
+    </Tabs>
+
+    Expected training output:
+
+    ```
+    {'loss': 1.7093, 'learning_rate': 2e-05, 'epoch': 0.02}
+    {'loss': 1.6595, 'learning_rate': 1.7777777777777777e-05, 'epoch': 0.03}
+    {'loss': 1.5172, 'learning_rate': 1.555555555555556e-05, 'epoch': 0.05}
+    {'loss': 1.3666, 'learning_rate': 1.3333333333333333e-05, 'epoch': 0.06}
+    {'loss': 1.2738, 'learning_rate': 1.1111111111111113e-05, 'epoch': 0.08}
+    ...
+    TrainOutput(global_step=200, training_loss=1.321143569946289, ...)
+    ```
+  </Step>
+
+  <Step title="Save and merge the adapter">
+    The trainer saves only the LoRA adapter weights to `output_dir`. To create a standalone model for inference, merge the adapter back into the base weights:
+
+    ```python
+    # Save just the adapter (done automatically by trainer)
+    model.save_pretrained("outputs")
+    tokenizer.save_pretrained("outputs")
+    ```
+
+    To merge the adapter into the original model:
+
+    ```bash
+    python export_merged_model.py \
+        --repo-id-or-model-path meta-llama/Llama-2-7b-hf \
+        --adapter_path ./outputs/checkpoint-200 \
+        --output_path ./outputs/checkpoint-200-merged
+    ```
+
+    The merged model at `./outputs/checkpoint-200-merged` is a standard HuggingFace Transformers model that can be used for inference directly.
+  </Step>
+</Steps>
+
+## DPO finetuning
+
+Direct Preference Optimization (DPO) uses preference pairs (chosen/rejected responses) to align a model without a reward model. IPEX-LLM supports DPO via TRL's `DPOTrainer`.
+
+The following example finetunes `teknium/OpenHermes-2.5-Mistral-7B` on the `Intel/orca_dpo_pairs` dataset:
+
+```python
+import torch
+from ipex_llm.transformers.qlora import get_peft_model, prepare_model_for_kbit_training
+from ipex_llm.transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer, BitsAndBytesConfig
+from peft import LoraConfig
+from trl import DPOConfig, DPOTrainer
+from datasets import load_dataset
+
+model_path = "teknium/OpenHermes-2.5-Mistral-7B"
+
+# Load and format the preference dataset
+dataset = load_dataset("Intel/orca_dpo_pairs")["train"]
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "left"
+
+def chatml_format(example):
+    if len(example["system"]) > 0:
+        message = {"role": "system", "content": example["system"]}
+        system = tokenizer.apply_chat_template([message], tokenize=False)
+    else:
+        system = ""
+    message = {"role": "user", "content": example["question"]}
+    prompt = tokenizer.apply_chat_template([message], tokenize=False, add_generation_prompt=True)
+    chosen = example["chosen"] + "<|im_end|>\n"
+    rejected = example["rejected"] + "<|im_end|>\n"
+    return {"prompt": system + prompt, "chosen": chosen, "rejected": rejected}
+
+dataset = dataset.map(chatml_format, remove_columns=dataset.column_names)
+
+# LoRA config for DPO
+peft_config = LoraConfig(
+    r=16,
+    lora_alpha=16,
+    lora_dropout=0.05,
+    bias="none",
+    task_type="CAUSAL_LM",
+    target_modules=["k_proj", "gate_proj", "v_proj", "up_proj",
+                    "q_proj", "o_proj", "down_proj"],
+)
+
+# Load model with NF4 quantization
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=False,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16,
+)
+model = AutoModelForCausalLM.from_pretrained(model_path, quantization_config=bnb_config)
+model = model.to("xpu")
+model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+model = get_peft_model(model, peft_config)
+model.config.use_cache = False
+
+# Reference model (frozen copy for DPO)
+ref_model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_low_bit="nf4",
+    optimize_model=False,
+    torch_dtype=torch.bfloat16,
+    modules_to_not_convert=["lm_head"],
+)
+ref_model = ref_model.to("xpu")
+
+# Train
+training_args = DPOConfig(
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,
+    gradient_checkpointing=True,
+    learning_rate=5e-5,
+    lr_scheduler_type="cosine",
+    beta=0.1,
+    max_prompt_length=1024,
+    max_length=1536,
+    max_steps=200,
+    save_strategy="no",
+    logging_steps=1,
+    output_dir="outputs",
+    optim="adamw_hf",
+    warmup_steps=100,
+    bf16=True,
+)
+dpo_trainer = DPOTrainer(model, ref_model, args=training_args,
+                         train_dataset=dataset, tokenizer=tokenizer)
+dpo_trainer.train()
+
+# Save
+dpo_trainer.model.save_pretrained("outputs")
+tokenizer.save_pretrained("outputs")
+```
+
+<Note>
+  `paged_adamw_32bit` is not supported. Use `optim="adamw_hf"` or `"adamw_torch"` instead.
+</Note>
+
+## Multi-GPU finetuning
+
+To run finetuning across multiple Intel Arc or Max GPUs, use the pre-built shell scripts in the examples repository. Each script sets up the correct `oneccl` environment and launches training with `accelerate` or `mpirun`.
+
+<CodeGroup>
+
+```bash LLaMA 2-7B on 2× Arc A770
+bash qlora_finetune_llama2_7b_arc_2_card.sh
+```
+
+```bash LLaMA 2-7B on 4× Max 1550
+bash qlora_finetune_llama2_7b_pvc_1550_4_card.sh
+```
+
+```bash LLaMA 2-13B on 4× Max 1550
+bash qlora_finetune_llama2_13b_pvc_1550_4_card.sh
+```
+
+```bash LLaMA 2-70B on 4× Max 1550 (DeepSpeed ZeRO-2)
+bash qlora_finetune_llama2_70b_pvc_1550_4_card.sh
+```
+
+</CodeGroup>
+
+To resume training from a saved checkpoint:
+
+```bash
+python alpaca_qlora_finetuning.py \
+    --base_model "meta-llama/Llama-2-7b-hf" \
+    --data_path "yahma/alpaca-cleaned" \
+    --output_dir "./ipex-llm-qlora-alpaca" \
+    --resume_from_checkpoint "./ipex-llm-qlora-alpaca/checkpoint-1100"
+```
+
+## Troubleshooting
+
+| Error | Fix |
+|---|---|
+| `RuntimeError: oneCCL: ze_data was not initialized` | Run `sudo apt install level-zero-dev` |
+| `Too many open files` | Run `ulimit -n 1048576` |
+| `wandb.errors.UsageError: api_key not configured` | Run `export WANDB_MODE=offline` |
+| `NewConnectionError` or `Failed to download` | Download models locally and set `export HF_HUB_OFFLINE=1` |
+
+<CardGroup cols={2}>
+  <Card title="Finetuning overview" icon="book" href="/finetuning/overview">
+    See all supported methods, hardware, and verified models.
+  </Card>
+  <Card title="Axolotl finetuning" icon="terminal" href="/finetuning/axolotl">
+    Finetune with a YAML config file using the Axolotl framework.
+  </Card>
+</CardGroup>

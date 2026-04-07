@@ -1,0 +1,98 @@
+---
+title: "IPEX-LLM"
+description: "Accelerate LLM inference and finetuning on Intel GPUs, NPUs, and CPUs with low-bit quantization and seamless AI framework integrations."
+---
+
+IPEX-LLM is a PyTorch library from Intel for running large language models with very low latency on Intel hardware — including iGPUs, discrete Arc GPUs, NPUs, and CPUs. With a single line of code change, you get INT4/INT5/INT8/FP4/FP6/FP8 quantized inference, multi-GPU serving, and finetuning on the same hardware you already own.
+
+<CardGroup cols={2}>
+  <Card title="Install on Windows (GPU)" icon="windows" href="/quickstart/install-windows-gpu">
+    Set up IPEX-LLM on Windows with Intel Arc, iGPU, or Flex GPU
+  </Card>
+  <Card title="Install on Linux (GPU)" icon="linux" href="/quickstart/install-linux-gpu">
+    Set up IPEX-LLM on Linux with Intel Arc, Flex, or Max GPU
+  </Card>
+  <Card title="NPU Quickstart" icon="microchip" href="/quickstart/install-npu">
+    Run LLMs on Intel Core Ultra NPU for ultra-low power inference
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/transformers">
+    Explore the full Python API for transformers and optimize
+  </Card>
+</CardGroup>
+
+## Why IPEX-LLM?
+
+<CardGroup cols={2}>
+  <Card title="70+ Verified Models" icon="brain">
+    LLaMA, Mistral, DeepSeek, Qwen, ChatGLM, Phi, Gemma, MiniCPM, and more — all optimized and verified on Intel hardware.
+  </Card>
+  <Card title="Low-Bit Quantization" icon="bolt">
+    INT4, INT5, INT8, FP4, FP6, FP8 precision support for maximum throughput and minimal memory footprint.
+  </Card>
+  <Card title="One-Line Integration" icon="plug">
+    Drop-in replacement for HuggingFace Transformers. Add `load_in_4bit=True` and you're accelerated.
+  </Card>
+  <Card title="Broad Framework Support" icon="layer-group">
+    Works with Ollama, llama.cpp, vLLM, LangChain, LlamaIndex, FastChat, Axolotl, and more.
+  </Card>
+</CardGroup>
+
+## Get running in minutes
+
+<Steps>
+  <Step title="Install IPEX-LLM">
+    Install via pip for your platform (GPU or CPU):
+    ```bash
+    pip install --pre --upgrade ipex-llm[xpu] --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+    ```
+  </Step>
+  <Step title="Load a model with INT4 optimization">
+    Use the familiar HuggingFace API with one additional parameter:
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+    from transformers import AutoTokenizer
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-2-7b-chat-hf",
+        load_in_4bit=True
+    )
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf")
+    ```
+  </Step>
+  <Step title="Run inference on Intel GPU">
+    Move the model to XPU and generate:
+    ```python
+    import torch
+
+    model = model.to('xpu')
+
+    with torch.inference_mode():
+        input_ids = tokenizer.encode("What is Intel?", return_tensors="pt").to('xpu')
+        output = model.generate(input_ids, max_new_tokens=64)
+        print(tokenizer.decode(output[0], skip_special_tokens=True))
+    ```
+  </Step>
+</Steps>
+
+## Explore by use case
+
+<CardGroup cols={2}>
+  <Card title="GPU Inference" icon="desktop" href="/inference/gpu-inference">
+    Run INT4/FP16 LLMs on Intel Arc, Flex, and Max GPUs
+  </Card>
+  <Card title="Serve with Ollama" icon="server" href="/serving/ollama">
+    Use Ollama as a frontend with IPEX-LLM as the backend
+  </Card>
+  <Card title="vLLM Serving" icon="rocket" href="/serving/vllm">
+    Production-grade continuous batching on Intel GPUs
+  </Card>
+  <Card title="QLoRA Finetuning" icon="graduation-cap" href="/finetuning/qlora">
+    Finetune LLaMA-2 and other models on Intel GPU
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Ready-to-use Docker images for inference and serving
+  </Card>
+  <Card title="Multi-GPU Inference" icon="cubes" href="/deployment/multi-gpu">
+    Pipeline parallel inference across 2+ Intel Arc GPUs
+  </Card>
+</CardGroup>

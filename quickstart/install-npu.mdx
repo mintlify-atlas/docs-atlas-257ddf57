@@ -1,0 +1,324 @@
+---
+title: "Install on NPU"
+description: "Run IPEX-LLM on Intel NPU for efficient on-device LLM inference on Intel Core Ultra processors."
+---
+
+IPEX-LLM supports Intel NPU on Intel Core™ Ultra Processors (Meteor Lake, Lunar Lake, Arrow Lake). Both a Hugging Face-compatible Python API and a C++ API are provided.
+
+<Warning>
+  IPEX-LLM currently supports Intel NPU on **Windows only**.
+</Warning>
+
+## Install prerequisites
+
+<Steps>
+  <Step title="Update NPU driver">
+    <Warning>
+      Update your NPU driver to version `32.0.100.3104`, which has been thoroughly verified. Running an older driver may produce incorrect results or errors.
+    </Warning>
+
+    **Download the driver:**
+
+    Visit the [Intel NPU Driver for Windows](https://www.intel.com/content/www/us/en/download/794734/838895/intel-npu-driver-windows.html) download page and download the driver zip file. Extract it to a folder on your machine.
+
+    **Install the driver:**
+
+    1. Open **Device Manager** and locate **Neural processors → Intel(R) AI Boost**.
+    2. Right-click **Intel(R) AI Boost** and select **Update driver**.
+    3. Choose **Browse my computer for drivers**, navigate to the extracted folder, and click **Next**.
+    4. Wait for installation to complete.
+
+    **If the driver to be installed is older than the current version** (uninstall first):
+
+    1. In **Device Manager**, right-click **Intel(R) AI Boost** → **Uninstall driver**.
+    2. Check **Attempt to remove the driver for this device** and click **Uninstall**.
+    3. Click **Add Drivers** in the toolbar, select the extracted folder, and click **Next**.
+    4. After installation, click **Scan for hardware changes** in the toolbar.
+
+    A system reboot is required to apply driver changes.
+  </Step>
+
+  <Step title="(Optional) Install Visual Studio 2022">
+    <Note>
+      Visual Studio 2022 is only required if you plan to use the **C++ API**. Skip this step if you are using the Python API.
+    </Note>
+
+    Install [Visual Studio 2022 Community Edition](https://visualstudio.microsoft.com/downloads/) and select the **Desktop development with C++** workload during installation.
+  </Step>
+
+  <Step title="Set up Python environment">
+    Visit the [Miniforge installation page](https://conda-forge.org/download/), download the **Miniforge installer for Windows**, and follow the on-screen instructions.
+
+    After installation, open the **Miniforge Prompt** and create a new Python environment named `llm-npu`:
+
+    ```cmd
+    conda create -n llm-npu python=3.11
+    ```
+
+    Activate the environment:
+
+    ```cmd
+    conda activate llm-npu
+    ```
+
+    <Tip>
+      `ipex-llm` for NPU supports Python 3.10 and 3.11.
+    </Tip>
+  </Step>
+
+  <Step title="(Optional) Install CMake">
+    <Note>
+      CMake is only required for the **C++ API**. Skip this step if you are using the Python API.
+    </Note>
+
+    With the `llm-npu` environment active:
+
+    ```cmd
+    conda activate llm-npu
+    pip install cmake
+    ```
+  </Step>
+</Steps>
+
+## Install `ipex-llm` with NPU support
+
+With the `llm-npu` environment active, install `ipex-llm` with the `npu` extra:
+
+```cmd
+conda activate llm-npu
+pip install --pre --upgrade ipex-llm[npu]
+```
+
+## Runtime configurations
+
+Set the following environment variable in the active `llm-npu` environment based on your processor:
+
+<Tabs>
+  <Tab title="Lunar Lake (Series 2)">
+    For **Intel Core™ Ultra 7 Processor 258V**:
+
+    No runtime configuration required.
+
+    For **Intel Core™ Ultra 5 Processor 228V & 226V**:
+
+    ```cmd
+    set IPEX_LLM_NPU_DISABLE_COMPILE_OPT=1
+    ```
+  </Tab>
+  <Tab title="Arrow Lake (Series 2)">
+    For Intel Core™ Ultra Processors with processor number 2xxK or 2xxH:
+
+    ```cmd
+    set IPEX_LLM_NPU_ARL=1
+    ```
+  </Tab>
+  <Tab title="Meteor Lake (Series 1)">
+    For Intel Core™ Ultra Processors with processor number 1xxH:
+
+    ```cmd
+    set IPEX_LLM_NPU_MTL=1
+    ```
+  </Tab>
+</Tabs>
+
+## Python API
+
+IPEX-LLM provides a Hugging Face `transformers`-compatible Python API for running models on Intel NPU with minimal code changes.
+
+### Verified models
+
+The following models have been verified on Intel NPU:
+
+| Model | Verified platforms |
+|---|---|
+| LLaMA 2 (7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| LLaMA 3 (8B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| LLaMA 3.2 (1B, 3B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| GLM-Edge (1.5B, 4B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| Qwen 2 (1.5B, 7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| Qwen 2.5 (3B) | Lunar Lake |
+| Qwen 2.5 (7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| DeepSeek-R1-Distill-Qwen (1.5B, 7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| MiniCPM (1B, 2B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| Baichuan 2 (7B) | Lunar Lake |
+| MiniCPM-Llama3-V-2_5 (multimodal) | Lunar Lake |
+| MiniCPM-V-2_6 (multimodal) | Lunar Lake |
+| Bce-Embedding-Base-V1 (embedding) | Lunar Lake |
+
+<Tip>
+  See the full collection of [IPEX-LLM NPU examples](https://github.com/intel-analytics/ipex-llm/tree/main/python/llm/example/NPU/HF-Transformers-AutoModels) on GitHub.
+</Tip>
+
+### Example: run Qwen2-1.5B-Instruct on NPU
+
+After setting the [runtime configuration](#runtime-configurations) for your processor, create a file `demo_npu.py`:
+
+```python
+import torch
+from ipex_llm.transformers.npu_model import AutoModelForCausalLM
+from transformers import AutoTokenizer
+
+# Load tokenizer from Hugging Face
+tokenizer = AutoTokenizer.from_pretrained(
+    "Qwen/Qwen2-1.5B-Instruct",
+    trust_remote_code=True
+)
+
+# Load model with NPU low-bit optimizations
+model = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen2-1.5B-Instruct",
+    load_in_low_bit="sym_int4",
+    trust_remote_code=True
+)
+
+question = "What is AI?"
+messages = [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": question}
+]
+text = tokenizer.apply_chat_template(
+    messages,
+    tokenize=False,
+    add_generation_prompt=True
+)
+
+input_ids = tokenizer.encode(text, return_tensors="pt")
+
+with torch.inference_mode():
+    output = model.generate(input_ids, do_sample=False, max_new_tokens=64)
+    output_str = tokenizer.decode(output[0], skip_special_tokens=True)
+    print(output_str)
+```
+
+Run it with:
+
+```cmd
+python demo_npu.py
+```
+
+### Save and load low-bit models
+
+IPEX-LLM provides save/load APIs for NPU-optimized models to avoid re-running optimization on every startup. Import `AutoModelForCausalLM` from `ipex_llm.transformers.npu_model` and use the standard `save_pretrained` / `from_pretrained` pattern. See the [Save-Load example](https://github.com/intel-analytics/ipex-llm/tree/main/python/llm/example/NPU/HF-Transformers-AutoModels/Save-Load) for details.
+
+## C++ API
+
+IPEX-LLM also provides a C++ API for running Hugging Face `transformers` models on Intel NPU. This requires Visual Studio 2022 with the C++ workload.
+
+### Verified models (C++ API)
+
+| Model | Verified platforms |
+|---|---|
+| LLaMA 2 (7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| LLaMA 3 (8B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| LLaMA 3.2 (1B, 3B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| Qwen 2 (1.5B, 7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| Qwen 2.5 (3B) | Lunar Lake |
+| Qwen 2.5 (7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| DeepSeek-R1-Distill-Qwen (1.5B, 7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| MiniCPM (1B, 2B) | Meteor Lake, Lunar Lake, Arrow Lake |
+
+See the [C++ API examples](https://github.com/intel-analytics/ipex-llm/tree/main/python/llm/example/NPU/HF-Transformers-AutoModels/LLM/CPP_Examples) for usage.
+
+## llama.cpp support (experimental)
+
+IPEX-LLM provides a `llama.cpp`-compatible API for running GGUF models on Intel NPU.
+
+### Verified GGUF models
+
+| Model | Verified platforms |
+|---|---|
+| LLaMA 3.2 (3B) | Meteor Lake, Lunar Lake, Arrow Lake |
+| DeepSeek-R1-Distill-Qwen (1.5B, 7B) | Meteor Lake, Lunar Lake, Arrow Lake |
+
+<Tip>
+  You can use the [llama.cpp portable zip](https://github.com/intel-analytics/ipex-llm/blob/main/docs/mddocs/Quickstart/llama_cpp_npu_portable_zip_quickstart.md) to run GGUF models directly on Intel NPU without any manual installation.
+</Tip>
+
+### Run a GGUF model with the CLI tool
+
+Create a working directory and initialize llama.cpp for NPU (run with administrator privileges in Miniforge Prompt):
+
+```cmd
+mkdir llama-cpp-npu
+cd llama-cpp-npu
+init-llama-cpp.bat
+```
+
+Download a GGUF model (for example, `DeepSeek-R1-Distill-Qwen-7B-Q6_K.gguf`) into the working directory, then apply [runtime configurations](#runtime-configurations) and run:
+
+```cmd
+llama-cli-npu.exe -m DeepSeek-R1-Distill-Qwen-7B-Q6_K.gguf -n 32 --prompt "What is AI?"
+```
+
+Use `llama-cli-npu.exe -h` to see all available parameters.
+
+<Note>
+  On the first run of a GGUF model, delays of several minutes before the first token are expected due to blob compilation.
+</Note>
+
+## Accuracy tuning
+
+If model outputs are incorrect or degraded, IPEX-LLM provides several knobs to improve accuracy on Intel NPU:
+
+<AccordionGroup>
+  <Accordion title="IPEX_LLM_NPU_QUANTIZATION_OPT environment variable">
+    Set this environment variable before loading the model to enhance low-bit model accuracy:
+
+    ```cmd
+    set IPEX_LLM_NPU_QUANTIZATION_OPT=1
+    ```
+  </Accordion>
+
+  <Accordion title="Low-bit optimization selection">
+    IPEX-LLM on Intel NPU supports `sym_int4`, `asym_int4`, and `sym_int8` quantization. Adjust `load_in_low_bit` in `from_pretrained` to switch between them:
+
+    ```python
+    # Try asym_int4 instead of sym_int4 for potentially better accuracy
+    model = AutoModelForCausalLM.from_pretrained(
+        "Qwen/Qwen2-1.5B-Instruct",
+        load_in_low_bit="asym_int4",
+        trust_remote_code=True
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Mixed precision">
+    Enable mixed precision optimization to address output quality issues:
+
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "Qwen/Qwen2-1.5B-Instruct",
+        load_in_low_bit="sym_int4",
+        mixed_precision=True,
+        trust_remote_code=True
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Group size (channel-wise vs. group-wise quantization)">
+    The `quantization_group_size` parameter controls quantization granularity:
+
+    - `quantization_group_size=0`: channel-wise quantization (default)
+    - `quantization_group_size=128`: group-wise quantization with group size 128
+
+    Group-wise quantization can improve output quality:
+
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        "Qwen/Qwen2-1.5B-Instruct",
+        load_in_low_bit="sym_int4",
+        quantization_group_size=128,
+        trust_remote_code=True
+    )
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Install on Windows (GPU)" icon="windows" href="/quickstart/install-windows-gpu">
+    Set up IPEX-LLM on Windows with Intel GPU.
+  </Card>
+  <Card title="Install on Linux (GPU)" icon="linux" href="/quickstart/install-linux-gpu">
+    Set up IPEX-LLM on Linux with Intel GPU.
+  </Card>
+</CardGroup>

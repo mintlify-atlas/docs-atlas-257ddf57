@@ -1,0 +1,452 @@
+---
+title: "Portable zip"
+description: "Run Ollama, llama.cpp, and FlashMoE on Intel GPUs without any manual installation using self-contained portable archives."
+---
+
+Portable zip packages bundle IPEX-LLM with all required runtimes into a single archive. You extract the folder and run — no conda environment, no pip install, no oneAPI setup required.
+
+Portable zips are the fastest way to get started on Windows or Linux, and are especially useful on machines where you cannot or do not want to modify the system Python environment.
+
+<Note>
+Do **not** source a oneAPI environment when using portable zips. The required runtime libraries are included in the archive.
+</Note>
+
+Download the latest releases from the [IPEX-LLM releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly).
+
+---
+
+## Ollama portable zip
+
+Run Ollama with full Intel GPU acceleration. Verified hardware:
+
+- Intel Core Ultra processors
+- Intel Core 11th–14th gen processors
+- Intel Arc A-Series GPU
+- Intel Arc B-Series GPU
+
+<Tabs>
+  <Tab title="Windows">
+    <Note>
+    Windows 11 is recommended.
+    </Note>
+
+    <Steps>
+      <Step title="Update your GPU driver">
+        Update to the [latest Intel Arc/Iris Xe driver](https://www.intel.com/content/www/us/en/download/785597/intel-arc-iris-xe-graphics-windows.html) before proceeding.
+      </Step>
+
+      <Step title="Download and extract">
+        Download the IPEX-LLM Ollama portable zip for Windows from the [releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly), then extract it to a folder.
+      </Step>
+
+      <Step title="Start Ollama serve">
+        Open **Command Prompt** and navigate to the extracted folder:
+
+        ```cmd
+        cd /d PATH\TO\EXTRACTED\FOLDER
+        start-ollama.bat
+        ```
+
+        A new window will appear showing the Ollama server log.
+      </Step>
+
+      <Step title="Run a model">
+        In the same **Command Prompt** window (not the pop-up), run:
+
+        ```cmd
+        ollama run deepseek-r1:7b
+        ```
+
+        You can substitute any model name supported by Ollama.
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Linux">
+    <Steps>
+      <Step title="Update your GPU driver">
+        Follow the [Intel client GPU driver installation guide](https://dgpu-docs.intel.com/driver/client/overview.html) to install or update your driver.
+      </Step>
+
+      <Step title="Download and extract">
+        Download the IPEX-LLM Ollama portable tgz for Ubuntu from the [releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly), then extract:
+
+        ```bash
+        tar -xvf ipex-llm-ollama-*.tgz
+        ```
+      </Step>
+
+      <Step title="Start Ollama serve">
+        ```bash
+        cd PATH/TO/EXTRACTED/FOLDER
+        ./start-ollama.sh
+        ```
+      </Step>
+
+      <Step title="Run a model">
+        Open a second terminal, navigate to the same extracted folder, and run:
+
+        ```bash
+        cd PATH/TO/EXTRACTED/FOLDER
+        ./ollama run deepseek-r1:7b
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+### Tips
+
+**Speed up model downloads**
+
+Set `OLLAMA_MODEL_SOURCE=modelscope` before starting Ollama serve to download from ModelScope instead of the Ollama library:
+
+<CodeGroup>
+```cmd Windows
+set OLLAMA_MODEL_SOURCE=modelscope
+ollama run deepseek-r1:7b
+```
+
+```bash Linux
+export OLLAMA_MODEL_SOURCE=modelscope
+./ollama run deepseek-r1:7b
+```
+</CodeGroup>
+
+**Increase context length**
+
+By default Ollama uses a 2048-token context window. Set `OLLAMA_NUM_CTX` before starting the server:
+
+<CodeGroup>
+```cmd Windows
+set OLLAMA_NUM_CTX=16384
+start-ollama.bat
+```
+
+```bash Linux
+export OLLAMA_NUM_CTX=16384
+./start-ollama.sh
+```
+</CodeGroup>
+
+**Select specific GPUs (multi-GPU machines)**
+
+If your system has multiple Intel GPUs, Ollama will use all of them by default. To restrict to specific GPUs, set `ONEAPI_DEVICE_SELECTOR` before starting the server:
+
+<CodeGroup>
+```cmd Windows — single GPU
+set ONEAPI_DEVICE_SELECTOR=level_zero:0
+start-ollama.bat
+```
+
+```cmd Windows — two GPUs
+set ONEAPI_DEVICE_SELECTOR=level_zero:0;level_zero:1
+start-ollama.bat
+```
+
+```bash Linux — single GPU
+export ONEAPI_DEVICE_SELECTOR=level_zero:0
+./start-ollama.sh
+```
+
+```bash Linux — two GPUs
+export ONEAPI_DEVICE_SELECTOR="level_zero:0;level_zero:1"
+./start-ollama.sh
+```
+</CodeGroup>
+
+**Save VRAM**
+
+Set `OLLAMA_NUM_PARALLEL=1` before starting serve to limit parallel sequence slots:
+
+<CodeGroup>
+```cmd Windows
+set OLLAMA_NUM_PARALLEL=1
+start-ollama.bat
+```
+
+```bash Linux
+export OLLAMA_NUM_PARALLEL=1
+./start-ollama.sh
+```
+</CodeGroup>
+
+For MoE models (such as `qwen3:30b`), offload experts to CPU to save GPU VRAM:
+
+<CodeGroup>
+```cmd Windows
+set OLLAMA_SET_OT="exps=CPU"
+start-ollama.bat
+```
+
+```bash Linux
+export OLLAMA_SET_OT="exps=CPU"
+./start-ollama.sh
+```
+</CodeGroup>
+
+**Performance tuning**
+
+Experiment with `SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS` set to `0` or `1` before starting Ollama serve to find the best setting for your GPU:
+
+<CodeGroup>
+```cmd Windows
+set SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+start-ollama.bat
+```
+
+```bash Linux
+export SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+./start-ollama.sh
+```
+</CodeGroup>
+
+---
+
+## llama.cpp portable zip
+
+Run llama.cpp GGUF models directly on your Intel GPU. Same verified hardware as Ollama above.
+
+<Tabs>
+  <Tab title="Windows">
+    <Steps>
+      <Step title="Update your GPU driver">
+        Update to the [latest Intel Arc/Iris Xe driver](https://www.intel.com/content/www/us/en/download/785597/intel-arc-iris-xe-graphics-windows.html).
+      </Step>
+
+      <Step title="Download and extract">
+        Download the IPEX-LLM llama.cpp portable zip for Windows from the [releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly), then extract to a folder.
+      </Step>
+
+      <Step title="Download a GGUF model">
+        Download a GGUF model to your local machine. For example, `DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf` from [bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF](https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF).
+      </Step>
+
+      <Step title="Run the model">
+        Open **Command Prompt**, navigate to the extracted folder, and run:
+
+        ```cmd
+        cd /d PATH\TO\EXTRACTED\FOLDER
+        llama-cli.exe -m PATH\TO\DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf ^
+          -p "What is AI?" -n 128 -t 8 -e -ngl 99 --color -c 2500 --temp 0 -no-cnv
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Linux">
+    <Steps>
+      <Step title="Update your GPU driver">
+        Follow the [Intel client GPU driver installation guide](https://dgpu-docs.intel.com/driver/client/overview.html).
+      </Step>
+
+      <Step title="Download and extract">
+        Download the IPEX-LLM llama.cpp portable tgz for Linux from the [releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly), then extract:
+
+        ```bash
+        tar -xvf ipex-llm-llamacpp-*.tgz
+        cd PATH/TO/EXTRACTED/FOLDER
+        ```
+      </Step>
+
+      <Step title="Download a GGUF model">
+        Download a GGUF model to your local machine. For example, `DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf` from [bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF](https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF).
+      </Step>
+
+      <Step title="Run the model">
+        ```bash
+        ./llama-cli -m /PATH/TO/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf \
+          -p "What is AI?" -n 128 -t 8 -e -ngl 99 --color -c 2500 --temp 0 -no-cnv
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+### Multi-GPU selection for llama.cpp
+
+llama.cpp uses all detected Intel GPUs by default. When GPUs of different types are present (e.g., a discrete Arc GPU and an integrated UHD GPU), you may see a warning and reduced performance.
+
+Use `ONEAPI_DEVICE_SELECTOR` to specify which GPU(s) to use:
+
+<CodeGroup>
+```cmd Windows — one GPU
+set ONEAPI_DEVICE_SELECTOR=level_zero:0
+llama-cli.exe -m model.gguf ...
+```
+
+```cmd Windows — two GPUs
+set ONEAPI_DEVICE_SELECTOR="level_zero:0;level_zero:1"
+llama-cli.exe -m model.gguf ...
+```
+
+```bash Linux — one GPU
+export ONEAPI_DEVICE_SELECTOR=level_zero:0
+./llama-cli -m model.gguf ...
+```
+
+```bash Linux — two GPUs
+export ONEAPI_DEVICE_SELECTOR="level_zero:0;level_zero:1"
+./llama-cli -m model.gguf ...
+```
+</CodeGroup>
+
+To bypass the mixed-device check and run on all GPUs regardless:
+
+<CodeGroup>
+```cmd Windows
+set SYCL_DEVICE_CHECK=0
+```
+
+```bash Linux
+export SYCL_DEVICE_CHECK=0
+```
+</CodeGroup>
+
+---
+
+## FlashMoE for DeepSeek V3/R1 and Qwen3MoE (Linux)
+
+FlashMoE is a specialized tool built on top of llama.cpp for mixture-of-experts (MoE) models. It enables you to run **DeepSeek V3/R1 671B** and **Qwen3MoE 235B** with just 1 or 2 Intel Arc GPUs by keeping most weights in CPU memory while using GPU for active computation.
+
+<Warning>
+FlashMoE is currently available for **Linux only**. Do not source a oneAPI environment before running it.
+</Warning>
+
+### Hardware requirements
+
+| Model | CPU memory | GPU | Disk |
+|---|---|---|---|
+| DeepSeek V3/R1 671B (INT4) | 380 GB | 1–8 Arc A770 or B580 | 500 GB |
+| Qwen3MoE 235B (INT4) | 128 GB | 1–8 Arc A770 or B580 | 500 GB |
+
+### Setup
+
+<Steps>
+  <Step title="Download and extract the llama.cpp portable tgz">
+    Download from the [releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.3.0-nightly):
+
+    ```bash
+    tar -xvf ipex-llm-llamacpp-*.tgz
+    cd PATH/TO/EXTRACTED/FOLDER
+    ```
+  </Step>
+
+  <Step title="Download a MoE GGUF model">
+    Tested models include:
+    - [DeepSeek-R1-Q4_K_M](https://huggingface.co/unsloth/DeepSeek-R1-GGUF/tree/main/DeepSeek-R1-Q4_K_M)
+    - [DeepSeek-V3-Q4_K_M](https://huggingface.co/unsloth/DeepSeek-V3-GGUF/tree/main/DeepSeek-V3-Q4_K_M)
+    - [DeepSeek-V3-0324-GGUF/Q4_K_M](https://huggingface.co/unsloth/DeepSeek-V3-0324-GGUF/tree/main/Q4_K_M)
+  </Step>
+
+  <Step title="Run inference (CLI)">
+    ```bash
+    ./flash-moe -m /PATH/TO/DeepSeek-R1-Q4_K_M-00001-of-00009.gguf \
+      --prompt "What's AI?" -no-cnv
+    ```
+
+    <Note>
+    On a single Arc A770, reduce context length to avoid out-of-memory errors:
+
+    ```bash
+    ./flash-moe -m /PATH/TO/model.gguf --prompt "What's AI?" -no-cnv -c 1024
+    ```
+    </Note>
+  </Step>
+
+  <Step title="Run as a server (optional)">
+    FlashMoE can also expose an HTTP API compatible with the llama.cpp server:
+
+    ```bash
+    ./flash-moe -m /PATH/TO/DeepSeek-R1-Q4_K_M-00001-of-00009.gguf \
+      --serve -n 512 -np 2 -c 4096
+    ```
+
+    Parameters:
+    - `-n`: max tokens to predict per request
+    - `-np`: number of parallel sequences to decode
+    - `-c`: total context size
+
+    The server starts at `http://127.0.0.1:8080` by default.
+  </Step>
+</Steps>
+
+<Tip>
+On a dual-socket Xeon system, enable **SNC (Sub-NUMA Clustering)** in BIOS and prepend `numactl --interleave=all` to the launch command for better decoding throughput.
+</Tip>
+
+---
+
+## NPU portable zip (Windows only)
+
+IPEX-LLM provides a llama.cpp build for Intel NPU, allowing inference entirely on the NPU fabric without occupying GPU resources.
+
+<Warning>
+NPU support is **Windows only**. Currently supported models are limited to:
+- `meta-llama/Llama-3.2-3B-Instruct`
+- `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B`
+- `deepseek-ai/DeepSeek-R1-Distill-Qwen-7B`
+</Warning>
+
+<Steps>
+  <Step title="Check NPU driver">
+    Install NPU driver version [32.0.100.3104](https://www.intel.com/content/www/us/en/download/794734/838895/intel-npu-driver-windows.html).
+  </Step>
+
+  <Step title="Download and extract">
+    Download the IPEX-LLM llama.cpp NPU portable zip from the [releases page](https://github.com/ipex-llm/ipex-llm/releases/tag/v2.2.0), then extract to a folder.
+  </Step>
+
+  <Step title="Configure for your processor">
+    Open **Command Prompt** and navigate to the extracted folder. Apply the configuration for your CPU:
+
+    | Processor | Command |
+    |---|---|
+    | Core Ultra 7 258V (Lunar Lake) | No configuration needed |
+    | Core Ultra 5 228V / 226V (Lunar Lake) | `set IPEX_LLM_NPU_DISABLE_COMPILE_OPT=1` |
+    | Core Ultra 2xxK / 2xxH (Arrow Lake) | `set IPEX_LLM_NPU_ARL=1` |
+    | Core Ultra 1xxH (Meteor Lake) | `set IPEX_LLM_NPU_MTL=1` |
+  </Step>
+
+  <Step title="Run the model">
+    ```cmd
+    llama-cli-npu.exe -m DeepSeek-R1-Distill-Qwen-7B-Q6_K.gguf -n 32 --prompt "What is AI?"
+    ```
+
+    <Note>
+    The NPU backend supports a maximum input length of 960 tokens, and a maximum combined input + output length of 1024 tokens.
+    </Note>
+  </Step>
+</Steps>
+
+---
+
+## Signature verification
+
+Verify the integrity of any portable zip or tgz before use:
+
+```bash
+openssl cms -verify \
+  -in <filename>.pkcs1.sig \
+  -inform DER \
+  -content <filename> \
+  -out nul \
+  -noverify
+```
+
+<Note>
+`openssl` must be installed on your system. On Windows, it is available via Git Bash or Windows Subsystem for Linux.
+</Note>
+
+---
+
+## Related guides
+
+<CardGroup cols={2}>
+  <Card title="Docker" icon="docker" href="/deployment/docker">
+    Run IPEX-LLM with Docker for containerized GPU inference and serving.
+  </Card>
+  <Card title="Multi-GPU" icon="server" href="/deployment/multi-gpu">
+    Pipeline parallel inference across multiple Intel Arc GPUs.
+  </Card>
+</CardGroup>

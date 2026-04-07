@@ -1,0 +1,86 @@
+---
+title: "Finetuning overview"
+description: "Finetune large language models on Intel GPUs using QLoRA, LoRA, QA-LoRA, DPO, ReLoRA, and more — with native support for HuggingFace PEFT, TRL, and Axolotl."
+---
+
+IPEX-LLM supports parameter-efficient finetuning (PEFT) of large language models directly on Intel GPUs using 4-bit NormalFloat (NF4) quantization. The same low-bit optimizations that accelerate inference also reduce the memory footprint during training, making it practical to finetune 7B–70B parameter models on Intel Arc and Data Center GPU Max hardware.
+
+<Note>
+  Only HuggingFace Transformers-based models are supported for finetuning. GGUF and other formats are not supported.
+</Note>
+
+## Supported methods
+
+<CardGroup cols={2}>
+  <Card title="QLoRA" icon="layer-group" href="/finetuning/qlora">
+    Quantized Low-Rank Adaptation. Finetune with 4-bit NF4 weights and BF16 LoRA adapters using `ipex_llm.transformers.qlora`.
+  </Card>
+  <Card title="LoRA" icon="sliders" href="/finetuning/qlora">
+    Low-Rank Adaptation in BF16. Same API as QLoRA — set `training_mode="lora"` in `LoraConfig`.
+  </Card>
+  <Card title="QA-LoRA" icon="microchip" href="/finetuning/qlora">
+    Quantization-Aware Low-Rank Adaptation. Applies quantization-aware pooling in the LoRA path for better quantized model quality.
+  </Card>
+  <Card title="DPO" icon="code-compare" href="/finetuning/qlora">
+    Direct Preference Optimization. Finetune with preference data using TRL's `DPOTrainer` on top of IPEX-LLM 4-bit models.
+  </Card>
+  <Card title="ReLoRA" icon="rotate" href="/finetuning/qlora">
+    Merge LoRA adapters back into the base model periodically during training to enable larger effective rank at low cost.
+  </Card>
+  <Card title="Axolotl" icon="terminal" href="/finetuning/axolotl">
+    No-code finetuning with a YAML config file. IPEX-LLM serves as the accelerated backend for the Axolotl framework.
+  </Card>
+</CardGroup>
+
+## Hardware requirements
+
+IPEX-LLM finetuning runs on Intel XPU devices. The following hardware has been verified:
+
+| Hardware | Models verified |
+|---|---|
+| Intel Arc A770 (16 GB) | LLaMA 2/3 7B, ChatGLM3-6B, Qwen-1.5-7B, Gemma-2B, Baichuan2-7B |
+| Intel Data Center GPU Flex 170 | LLaMA 2 7B |
+| Intel Data Center GPU Max 1100 | LLaMA 2 7B/13B |
+| Intel Data Center GPU Max 1550 | LLaMA 2 7B/13B/70B, LLaMA 3 8B |
+
+<Tip>
+  LLaMA 2-7B QLoRA finetuning completes 3 epochs on the Alpaca dataset in approximately 21 minutes on a single Intel Data Center GPU Max 1550 tile.
+</Tip>
+
+Multi-GPU finetuning is supported via `oneccl_bind_pt` (Intel oneCCL) for distributed data-parallel training, and via DeepSpeed ZeRO-2/3 for model-parallel training of large models like LLaMA 2-70B.
+
+## Framework integrations
+
+IPEX-LLM exposes PEFT-compatible APIs so existing HuggingFace training code requires minimal changes.
+
+| Framework | Integration point |
+|---|---|
+| HuggingFace PEFT | Import `get_peft_model` and `prepare_model_for_kbit_training` from `ipex_llm.transformers.qlora` instead of `peft` |
+| HuggingFace TRL | Use `SFTTrainer` or `DPOTrainer` with the IPEX-LLM PEFT model directly |
+| Axolotl v0.4.0 | Set `adapter: qlora` or `adapter: lora` in your YAML config; IPEX-LLM handles the quantized backend |
+
+<Warning>
+  Do **not** import `prepare_model_for_kbit_training` or `get_peft_model` from the `peft` package directly. Import them from `ipex_llm.transformers.qlora` to get a compatible model that works correctly on Intel XPU.
+</Warning>
+
+## Verified models
+
+| Model | Supported methods |
+|---|---|
+| LLaMA 2 / LLaMA 3 | LoRA, QLoRA, QA-LoRA, ReLoRA, DPO (via TRL) |
+| Mistral | LoRA, QLoRA (via DPO) |
+| ChatGLM3-6B | LoRA, QLoRA |
+| Qwen-1.5 | QLoRA |
+| Baichuan2 | QLoRA |
+| Gemma-2B | QLoRA |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="QLoRA finetuning" icon="layer-group" href="/finetuning/qlora">
+    Step-by-step guide to finetune with QLoRA, LoRA, QA-LoRA, or DPO using the Python API.
+  </Card>
+  <Card title="Axolotl finetuning" icon="terminal" href="/finetuning/axolotl">
+    Finetune LLaMA 2/3 with a single YAML config file — no Python code required.
+  </Card>
+</CardGroup>

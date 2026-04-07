@@ -1,0 +1,216 @@
+---
+title: "PyTorch Optimize API"
+description: "Optimize any PyTorch model with a single function call, and save or reload the result."
+---
+
+The `ipex_llm` PyTorch API lets you apply low-bit quantization to any `torch.nn.Module` — not just HuggingFace Transformers models. This is useful for custom architectures, non-HuggingFace models (e.g. OpenAI Whisper loaded directly), or any workflow where you construct the model yourself before optimizing.
+
+<Tip>
+If you are already using HuggingFace `transformers`, prefer the [`AutoModel` API](/api/transformers) — it combines loading and optimization in a single call. Use the PyTorch API when you need to optimize a model instance you have already created.
+</Tip>
+
+---
+
+## `optimize_model`
+
+```python
+from ipex_llm import optimize_model
+```
+
+```python
+optimize_model(
+    model,
+    low_bit='sym_int4',
+    optimize_llm=True,
+    modules_to_not_convert=None,
+    cpu_embedding=False,
+    **kwargs
+)
+```
+
+Quantize and optimize a PyTorch model in-place. Linear layers are converted to the specified low-bit format; additional kernel-level optimizations are applied when `optimize_llm=True`.
+
+### Parameters
+
+<ParamField path="model" type="torch.nn.Module" required>
+  The original PyTorch model to optimize. Must be a `torch.nn.Module` instance and must be on `cpu` or `meta` device before calling this function.
+</ParamField>
+
+<ParamField path="low_bit" type="string" default="sym_int4">
+  Quantization format to apply to linear layers. Accepted values:
+
+  `sym_int4`, `asym_int4`, `sym_int5`, `asym_int5`, `sym_int8`, `nf3`, `nf4`, `fp4`, `fp8`, `fp8_e4m3`, `fp8_e5m2`, `fp16`, `bf16`, or `None`.
+
+  Pass `None` to apply optimizations without changing the weight dtype.
+</ParamField>
+
+<ParamField path="optimize_llm" type="boolean" default="True">
+  Whether to apply additional LLM-specific kernel optimizations beyond weight quantization (e.g. fused attention). Set to `False` to quantize weights only.
+</ParamField>
+
+<ParamField path="modules_to_not_convert" type="string[]" default="None">
+  List of module names to skip during quantization. The name must match the module's attribute path in the model (e.g. `"lm_head"`). Skipped modules remain in their original dtype.
+</ParamField>
+
+<ParamField path="cpu_embedding" type="boolean" default="False">
+  When `True`, keeps `nn.Embedding` layers on CPU even when the model is moved to a GPU device. Set to `True` when running on Intel GPU on Windows if you encounter embedding-related errors.
+</ParamField>
+
+<ParamField path="torch_dtype" type="string | torch.dtype">
+  Base dtype for non-quantized parameters. Defaults to `"auto"`. When `low_bit="fp16"`, this is automatically set to `torch.float16`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="model" type="torch.nn.Module">
+  The optimized model instance. The returned object has `_bigdl_config` metadata attached and a `save_low_bit(save_dir)` method for serialization.
+</ResponseField>
+
+### Example
+
+```python
+from ipex_llm import optimize_model
+import whisper
+
+# Load any PyTorch model
+model = whisper.load_model("small")
+
+# Optimize with a single line
+model = optimize_model(model)
+
+# Use exactly as before — no other API changes required
+result = model.transcribe("audio.mp3", verbose=True, language="English")
+
+# Optionally save the optimized model for fast reload later
+model.save_low_bit("./whisper-small-int4")
+```
+
+---
+
+## `load_low_bit`
+
+```python
+from ipex_llm.optimize import load_low_bit
+```
+
+```python
+load_low_bit(model, model_path)
+```
+
+Load a previously saved low-bit model checkpoint into an existing model instance. The model instance must be created first (either with `low_memory_init` or through normal loading), then `load_low_bit` replaces the weights.
+
+### Parameters
+
+<ParamField path="model" type="torch.nn.Module" required>
+  A model instance (with the same architecture as the saved checkpoint) to load weights into. Must be on `cpu` or `meta` device.
+</ParamField>
+
+<ParamField path="model_path" type="string" required>
+  Path to the directory containing the saved low-bit checkpoint. The directory must contain `pytorch_model.bin` and `bigdl_config.json`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="model" type="torch.nn.Module">
+  The model instance with low-bit weights loaded from disk.
+</ResponseField>
+
+---
+
+## `low_memory_init`
+
+```python
+from ipex_llm.optimize import low_memory_init
+```
+
+A context manager that loads a model on the `meta` device, deferring actual parameter allocation. This lets you construct large model instances without consuming RAM, so you can then call `load_low_bit` to fill in the quantized weights from disk.
+
+```python
+with low_memory_init():
+    model = AutoModel.from_pretrained(saved_dir, torch_dtype="auto", trust_remote_code=True)
+```
+
+<Note>
+`low_memory_init` is a context manager, not a function — use it with `with`. It is particularly useful for models that are too large to fit in RAM in full precision even briefly.
+</Note>
+
+---
+
+## Saving an optimized model
+
+After calling `optimize_model` or loading via `AutoModel.from_pretrained(..., load_in_low_bit=...)`, the returned model gains a `save_low_bit` method:
+
+```python
+model.save_low_bit(save_dir)
+```
+
+<ParamField path="save_dir" type="string" required>
+  Directory path to write the checkpoint. Created if it does not exist. For HuggingFace `PreTrainedModel` instances, uses `save_pretrained` internally (with `safe_serialization=False`). For other models, writes `pytorch_model.bin` via `torch.save`. Always writes `bigdl_config.json` alongside the weights.
+</ParamField>
+
+---
+
+## Full examples
+
+<CodeGroup>
+
+```python whisper-optimize.py
+# Optimize a non-HuggingFace model (Whisper)
+from ipex_llm import optimize_model
+import whisper
+
+model = whisper.load_model("tiny")
+model = optimize_model(model)
+
+result = model.transcribe("speech.wav", verbose=True, language="English")
+print(result["text"])
+
+# Save for later
+model.save_low_bit("./whisper-tiny-int4")
+```
+
+```python chatglm-save-reload.py
+# Save and reload a HuggingFace model via low_memory_init
+from transformers import AutoModel
+from ipex_llm.optimize import low_memory_init, load_low_bit
+
+saved_dir = "./chatglm2-6b-int4"
+
+# --- First run: save the quantized model ---
+from ipex_llm.transformers import AutoModel as IpexAutoModel
+model = IpexAutoModel.from_pretrained(
+    "THUDM/chatglm2-6b",
+    load_in_low_bit="sym_int4",
+    trust_remote_code=True,
+)
+model.save_low_bit(saved_dir)
+
+# --- Subsequent runs: fast reload ---
+with low_memory_init():  # avoids allocating full-precision weights
+    model = AutoModel.from_pretrained(
+        saved_dir,
+        torch_dtype="auto",
+        trust_remote_code=True,
+    )
+model = load_low_bit(model, saved_dir)
+```
+
+```python custom-module.py
+# Skip specific modules during quantization
+from ipex_llm import optimize_model
+from transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained("mistralai/Mistral-7B-v0.1")
+
+model = optimize_model(
+    model,
+    low_bit="sym_int4",
+    modules_to_not_convert=["lm_head"],  # keep lm_head in original dtype
+)
+```
+
+</CodeGroup>
+
+<Warning>
+The model must be on CPU (or `meta`) before passing it to `optimize_model` or `load_low_bit`. Move the model to GPU _after_ optimization is complete.
+</Warning>

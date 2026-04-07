@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "IPEX-LLM",
+  "projectType": "ai-ml",
+  "projectName": "IPEX-LLM",
+  "projectDescription": "An Intel LLM acceleration library for running and finetuning large language models on Intel GPUs, NPUs, and CPUs with low-bit quantization and seamless integration with popular AI frameworks.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#040404",
-    "light": "#34c4f4",
-    "dark": "#1770ba"
-  },
-  "favicon": "https://media.brand.dev/26fe1244-e968-4ca4-922b-abb6a7a611d6.png",
-  "logo": {
-    "light": "https://media.brand.dev/1a4ec443-b23b-44cf-b5a7-6328e991ad06.svg",
-    "dark": "https://media.brand.dev/a60b75ae-8d9c-49dc-b18a-50a63ae54d92.svg"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/intel/ipex-llm"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/intel/ipex-llm"
-    }
-  },
+  "primaryColor": "#040404",
+  "lightColor": "#34c4f4",
+  "darkColor": "#1770ba",
   "navigation": {
     "tabs": [
       {
@@ -96,5 +79,30 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Low-bit quantization (INT4/INT5/INT8/FP4/FP6/FP8) for LLM acceleration on Intel hardware",
+    "Support for 70+ LLMs including LLaMA, Mistral, DeepSeek, Qwen, ChatGLM, Phi, Gemma, and more",
+    "Seamless integration with Ollama, llama.cpp, vLLM, HuggingFace Transformers, LangChain, LlamaIndex",
+    "GPU inference and QLoRA finetuning on Intel Arc, Flex, Max, and iGPU",
+    "NPU acceleration on Intel Core Ultra processors (Windows)",
+    "Pipeline parallel inference across multiple Intel GPUs",
+    "One-line code change for HuggingFace Transformers-based applications",
+    "Docker and portable zip deployment options",
+    "FlashMoE support for running 671B parameter MoE models on 1-2 Arc GPUs"
+  ],
+  "publicApiSurface": [
+    "ipex_llm.transformers.AutoModelForCausalLM",
+    "ipex_llm.transformers.AutoModel",
+    "ipex_llm.transformers.AutoModelForSpeechSeq2Seq",
+    "ipex_llm.transformers.AutoModelForSeq2SeqLM",
+    "ipex_llm.optimize.optimize_model",
+    "ipex_llm.optimize.load_low_bit",
+    "ipex_llm.optimize.low_memory_init",
+    "ipex_llm.transformers.qlora.prepare_model_for_kbit_training",
+    "ipex_llm.transformers.qlora.get_peft_model",
+    "ipex_llm.langchain (LangChain integration)",
+    "ipex_llm.llamaindex (LlamaIndex integration)",
+    "ipex_llm.vllm (vLLM integration)"
+  ]
 }

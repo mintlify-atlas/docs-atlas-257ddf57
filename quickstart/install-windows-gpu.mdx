@@ -1,0 +1,299 @@
+---
+title: "Install on Windows (GPU)"
+description: "Install IPEX-LLM on Windows with Intel GPU support, including iGPU and Arc discrete graphics."
+---
+
+IPEX-LLM supports Intel Core Ultra and Core 11–14 gen integrated GPUs (iGPUs), as well as Intel Arc Series discrete GPUs on Windows.
+
+<Note>
+  For installation with PyTorch 2.6, refer to the [PyTorch 2.6 GPU install guide](https://github.com/intel/ipex-llm/blob/main/docs/mddocs/Quickstart/install_pytorch26_gpu.md). For Intel Arc B-Series GPUs (such as B580), refer to the [BMG quickstart](https://github.com/intel/ipex-llm/blob/main/docs/mddocs/Quickstart/bmg_quickstart.md). For Linux, see [Install on Linux (GPU)](/quickstart/install-linux-gpu).
+</Note>
+
+## Prerequisites
+
+<Steps>
+  <Step title="Update GPU driver">
+    Check your current GPU driver version in **Task Manager → Performance → GPU → Driver Version**.
+
+    <Warning>
+      If your driver version is lower than `31.0.101.5122`, you must update before proceeding.
+    </Warning>
+
+    Download and install the latest GPU driver from the [Intel Arc & Iris Xe Graphics download page](https://www.intel.com/content/www/us/en/download/785597/intel-arc-iris-xe-graphics-windows.html). A system reboot is required after installation.
+
+    <Note>
+      The installation process may take around 10 minutes. After rebooting, check that the **Intel Arc Control** application is present and launches correctly — this confirms the driver installed successfully.
+    </Note>
+  </Step>
+
+  <Step title="Set up Python environment">
+    Visit the [Miniforge installation page](https://conda-forge.org/download/), download the **Miniforge installer for Windows**, and follow the on-screen instructions.
+
+    After installation, open the **Miniforge Prompt** and create a new Python environment named `llm`:
+
+    ```cmd
+    conda create -n llm python=3.11 libuv
+    ```
+
+    Activate the environment:
+
+    ```cmd
+    conda activate llm
+    ```
+
+    <Note>
+      `ipex-llm` is tested with Python 3.9, 3.10, and 3.11. Python 3.11 is recommended. The `libuv` package is required to avoid import errors with `intel_extension_for_pytorch`.
+    </Note>
+  </Step>
+</Steps>
+
+## Install `ipex-llm`
+
+With the `llm` environment active, install `ipex-llm` with XPU (GPU) support. Choose either the US or CN index URL:
+
+<Tabs>
+  <Tab title="US">
+    ```cmd
+    pip install --pre --upgrade ipex-llm[xpu] --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+    ```
+  </Tab>
+  <Tab title="CN">
+    ```cmd
+    pip install --pre --upgrade ipex-llm[xpu] --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/cn/
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  If you encounter network issues during installation, you can install from pre-downloaded wheel files. Download `torch`, `torchvision`, and `intel_extension_for_pytorch` wheels manually from the Intel S3 bucket, then run `pip install --pre --upgrade ipex-llm[xpu]` without the extra index URL.
+</Note>
+
+## Verify installation
+
+<Steps>
+  <Step title="Configure runtime environment">
+    Open the **Miniforge Prompt**, activate the `llm` environment, and set the required environment variable for your GPU type:
+
+    ```cmd
+    conda activate llm
+    ```
+
+    For **Intel iGPU** and **Intel Arc™ A770**:
+
+    ```cmd
+    set SYCL_CACHE_PERSISTENT=1
+    ```
+
+    <Tip>
+      For other Intel dGPU models, consult the full [runtime configuration reference](https://github.com/intel-analytics/ipex-llm/blob/main/docs/mddocs/Overview/install_gpu.md#runtime-configuration) for the correct environment variables.
+    </Tip>
+  </Step>
+
+  <Step title="Run verification code">
+    Launch the Python interactive shell:
+
+    ```cmd
+    python
+    ```
+
+    Enter the following code **line by line**, pressing Enter after each line:
+
+    ```python
+    import torch
+    from ipex_llm.transformers import AutoModel, AutoModelForCausalLM
+    tensor_1 = torch.randn(1, 1, 40, 128).to('xpu')
+    tensor_2 = torch.randn(1, 1, 128, 40).to('xpu')
+    print(torch.matmul(tensor_1, tensor_2).size())
+    ```
+
+    Expected output:
+
+    ```
+    torch.Size([1, 1, 40, 40])
+    ```
+
+    To exit the Python shell, press `Ctrl+Z` then `Enter`, or type `exit()` and press `Enter`.
+  </Step>
+</Steps>
+
+## Monitor GPU status
+
+You can monitor GPU memory consumption and utilization using either:
+
+- **Windows Task Manager** → Performance tab → GPU
+- **Intel Arc Control** application
+
+## Quick example
+
+This example runs the [Qwen2-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2-1.5B-Instruct) model (1.5B parameters) with IPEX-LLM optimizations and asks it "What is AI?".
+
+**Step 1**: Apply the [runtime configuration](#verify-installation) described above.
+
+**Step 2**: Create a file named `demo.py` with one of the following code snippets:
+
+<Tabs>
+  <Tab title="Hugging Face">
+    ```python
+    import torch
+    from ipex_llm.transformers import AutoModelForCausalLM
+    from transformers import AutoTokenizer, GenerationConfig
+    generation_config = GenerationConfig(use_cache=True)
+
+    print('Now start loading Tokenizer and optimizing Model...')
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-1.5B-Instruct",
+                                              trust_remote_code=True)
+
+    # Load model using ipex-llm and move it to GPU
+    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2-1.5B-Instruct",
+                                                 load_in_4bit=True,
+                                                 cpu_embedding=True,
+                                                 trust_remote_code=True)
+    model = model.to('xpu')
+    print('Successfully loaded Tokenizer and optimized Model!')
+
+    question = "What is AI?"
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": question}
+    ]
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+
+    with torch.inference_mode():
+        input_ids = tokenizer.encode(text, return_tensors="pt").to('xpu')
+
+        # One-time warm-up before actual generation
+        output = model.generate(input_ids,
+                                do_sample=False,
+                                max_new_tokens=32,
+                                generation_config=generation_config)
+
+        print('Successfully finished warm-up, now start generation...')
+
+        output = model.generate(input_ids,
+                                do_sample=False,
+                                max_new_tokens=32,
+                                generation_config=generation_config).cpu()
+        output_str = tokenizer.decode(output[0], skip_special_tokens=False)
+        print(output_str)
+    ```
+  </Tab>
+  <Tab title="ModelScope">
+    First install ModelScope:
+
+    ```cmd
+    pip install modelscope==1.11.0
+    ```
+
+    Then create `demo.py`:
+
+    ```python
+    import torch
+    from ipex_llm.transformers import AutoModelForCausalLM
+    from transformers import GenerationConfig
+    from modelscope import AutoTokenizer
+    generation_config = GenerationConfig(use_cache=True)
+
+    print('Now start loading Tokenizer and optimizing Model...')
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-1.5B-Instruct",
+                                              trust_remote_code=True)
+
+    # Load model using ipex-llm and move it to GPU
+    model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2-1.5B-Instruct",
+                                                 load_in_4bit=True,
+                                                 cpu_embedding=True,
+                                                 trust_remote_code=True,
+                                                 model_hub='modelscope')
+    model = model.to('xpu')
+    print('Successfully loaded Tokenizer and optimized Model!')
+
+    question = "What is AI?"
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": question}
+    ]
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True
+    )
+
+    with torch.inference_mode():
+        input_ids = tokenizer.encode(text, return_tensors="pt").to('xpu')
+
+        # One-time warm-up before actual generation
+        output = model.generate(input_ids,
+                                do_sample=False,
+                                max_new_tokens=32,
+                                generation_config=generation_config)
+
+        print('Successfully finished warm-up, now start generation...')
+
+        output = model.generate(input_ids,
+                                do_sample=False,
+                                max_new_tokens=32,
+                                generation_config=generation_config).cpu()
+        output_str = tokenizer.decode(output[0], skip_special_tokens=False)
+        print(output_str)
+    ```
+
+    <Note>
+      The model repository ID on ModelScope may differ from the Hugging Face ID for some models.
+    </Note>
+  </Tab>
+</Tabs>
+
+<Note>
+  When running LLMs on Intel iGPUs with limited memory, set `cpu_embedding=True` in `from_pretrained`. This keeps the memory-intensive embedding layer on CPU instead of GPU.
+</Note>
+
+**Step 3**: Run the script:
+
+```cmd
+python demo.py
+```
+
+**Example output** (Intel Core Ultra 5 125H with Intel Arc Graphics iGPU):
+
+```
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+What is AI?<|im_end|>
+<|im_start|>assistant
+Artificial Intelligence (AI) refers to the simulation of human intelligence in machines that are programmed to think and act like humans. It involves the development of algorithms,
+```
+
+## Tips and troubleshooting
+
+### Warm-up for optimal performance on first run
+
+When running LLMs on GPU for the first time, you may notice delays of up to several minutes before the first token is generated. This happens because GPU kernels require compilation and initialization, which varies by GPU type.
+
+To achieve optimal and consistent performance, run `model.generate(...)` once as a warm-up before your actual generation task. If you're building an application, incorporate this warm-up into your startup or loading routine.
+
+### Error loading `intel_extension_for_pytorch`
+
+If you see an error when importing `intel_extension_for_pytorch`, make sure `libuv` is installed in your conda environment. Add it at environment creation time:
+
+```cmd
+conda create -n llm python=3.11 libuv
+```
+
+Or add it to an existing environment:
+
+```cmd
+conda install libuv
+```
+
+<CardGroup cols={2}>
+  <Card title="Install on Linux (GPU)" icon="linux" href="/quickstart/install-linux-gpu">
+    Set up IPEX-LLM on Linux with Intel GPU.
+  </Card>
+  <Card title="Install on NPU" icon="microchip" href="/quickstart/install-npu">
+    Run IPEX-LLM on Intel NPU for low-power inference.
+  </Card>
+</CardGroup>

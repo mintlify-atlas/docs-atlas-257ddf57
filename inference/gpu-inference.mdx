@@ -1,0 +1,369 @@
+---
+title: "GPU inference"
+description: "Run optimized LLMs on Intel Arc, Flex, Max, and integrated GPUs using IPEX-LLM's XPU backend."
+---
+
+IPEX-LLM supports inference on Intel discrete and integrated GPUs (iGPU). Models optimized with either the [transformers-style API](/inference/transformers-api) or the [PyTorch API](/inference/pytorch-api) can be moved to XPU with `.to('xpu')`.
+
+Supported Intel GPU families include:
+
+- **Intel Arc** series (A770, A750, A380, …)
+- **Intel Flex** series (Flex 140, Flex 170)
+- **Intel Max** series (Max 1100, Max 1550)
+- **Intel iGPU** (UHD Graphics, Iris Xe, Arc integrated)
+
+<Warning>
+  Make sure you have installed the Intel GPU drivers and oneAPI toolkit before running these examples. Follow the [Windows GPU install guide](/quickstart/install-windows-gpu) or the [Linux GPU install guide](/quickstart/install-linux-gpu).
+</Warning>
+
+---
+
+## Core pattern
+
+The key difference between CPU and GPU inference is:
+
+1. Set the model to `.to('xpu')` after optimization.
+2. Move input tensors to `'xpu'` before calling `model.generate()`.
+3. Move outputs back to CPU before decoding (`.cpu()`).
+
+```python
+import torch
+from ipex_llm.transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer
+
+model_path = "meta-llama/Llama-2-7b-chat-hf"
+
+# Load with INT4 optimization
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_4bit=True,
+    optimize_model=True,
+    trust_remote_code=True,
+    use_cache=True,
+)
+model = model.half().to("xpu")  # Move to GPU after loading
+
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+with torch.inference_mode():
+    prompt = "Q: What is CPU?\nA:"
+    # Input tensors must also be on XPU
+    input_ids = tokenizer.encode(prompt, return_tensors="pt").to("xpu")
+
+    output = model.generate(input_ids, max_new_tokens=32)
+
+    # Move output back to CPU before decoding
+    output_str = tokenizer.decode(output.cpu()[0], skip_special_tokens=True)
+    print(output_str)
+```
+
+---
+
+## Choosing a loading API
+
+<Tabs>
+  <Tab title="Transformers-style API">
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-2-7b-chat-hf",
+        load_in_4bit=True,
+        optimize_model=True,
+        trust_remote_code=True,
+        use_cache=True,
+    )
+    model = model.half().to("xpu")
+    ```
+  </Tab>
+  <Tab title="PyTorch API">
+    ```python
+    from transformers import LlamaForCausalLM
+    from ipex_llm import optimize_model
+
+    model = LlamaForCausalLM.from_pretrained(
+        "meta-llama/Llama-2-7b-chat-hf",
+        torch_dtype="auto",
+        low_cpu_mem_usage=True,
+    )
+    model = optimize_model(model)
+    model = model.to("xpu")
+    ```
+  </Tab>
+  <Tab title="Load from saved checkpoint">
+    ```python
+    # Transformers-style API
+    from ipex_llm.transformers import AutoModelForCausalLM
+
+    saved_dir = "./llama-2-ipex-llm-4-bit"
+    model = AutoModelForCausalLM.load_low_bit(saved_dir)
+    model = model.to("xpu")
+    ```
+
+    ```python
+    # PyTorch API
+    from transformers import LlamaForCausalLM
+    from ipex_llm.optimize import low_memory_init, load_low_bit
+
+    saved_dir = "./llama-2-ipex-llm-4-bit"
+    with low_memory_init():
+        model = LlamaForCausalLM.from_pretrained(
+            saved_dir,
+            torch_dtype="auto",
+            trust_remote_code=True,
+        )
+    model = load_low_bit(model, saved_dir)
+    model = model.to("xpu")
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Precision options on GPU
+
+### INT4 (recommended for most models)
+
+Converts linear weights to 4-bit integers. Best for maximizing throughput and fitting large models in GPU memory.
+
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_4bit=True,
+)
+model = model.half().to("xpu")
+```
+
+### FP16
+
+Keeps weights in 16-bit float. Use this when you need higher precision or plan to enable [self-speculative decoding](/inference/speculative-decoding).
+
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_low_bit="fp16",
+    optimize_model=True,
+)
+model = model.to("xpu")
+```
+
+### BF16
+
+Supported on Intel Max series and newer Arc GPUs. Useful when your workload benefits from the wider dynamic range of BF16 over FP16.
+
+```python
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_low_bit="bf16",
+    optimize_model=True,
+)
+model = model.to("xpu")
+```
+
+<Note>
+  `model.half()` casts the non-quantized parts of the model (layer norms, output projection, etc.) to FP16. This is recommended when using `load_in_4bit=True` on GPU to ensure the activation dtype matches the GPU's preferred format.
+</Note>
+
+---
+
+## Warmup run
+
+The first generation on Intel GPU is slower due to JIT kernel compilation. Run one warmup pass before timing or serving:
+
+```python
+with torch.inference_mode():
+    input_ids = tokenizer.encode("Warmup prompt", return_tensors="pt").to("xpu")
+
+    # Warmup pass — discard the result
+    _ = model.generate(input_ids, max_new_tokens=32)
+
+    # Actual timed inference
+    import time
+    st = time.time()
+    output = model.generate(input_ids, max_new_tokens=128)
+    torch.xpu.synchronize()
+    print(f"Inference time: {time.time() - st:.3f}s")
+```
+
+<Warning>
+  On Intel iGPU and Intel Arc A300-Series or Pro A60, the **first run of each model** may take several minutes to compile. This is a one-time cost per model per system.
+</Warning>
+
+---
+
+## iGPU: saving memory with `cpu_embedding`
+
+Integrated GPUs share system memory with the CPU. The embedding layer of a large LLM can consume hundreds of MB. Set `cpu_embedding=True` to keep the embedding on CPU and free that memory for the GPU compute layers:
+
+<Tabs>
+  <Tab title="Transformers-style API">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        load_in_4bit=True,
+        cpu_embedding=True,  # Keep embedding on CPU
+    )
+    model = model.half().to("xpu")
+    ```
+  </Tab>
+  <Tab title="PyTorch API">
+    ```python
+    from ipex_llm import optimize_model
+
+    model = optimize_model(model, cpu_embedding=True)
+    model = model.to("xpu")
+    ```
+  </Tab>
+  <Tab title="Loading saved model">
+    ```python
+    from ipex_llm.transformers import AutoModelForCausalLM
+
+    model = AutoModelForCausalLM.load_low_bit(
+        saved_dir,
+        cpu_embedding=True,
+    )
+    model = model.to("xpu")
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Selecting a specific GPU
+
+If your system has multiple Intel GPUs, you can choose which one to use.
+
+### List available devices
+
+```bash
+# Linux
+source /opt/intel/oneapi/setvars.sh && sycl-ls
+
+# Windows (CMD or Miniforge Prompt)
+call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" && sycl-ls
+```
+
+A system with two Arc A770 GPUs and one iGPU might show:
+
+```
+[ext_oneapi_level_zero:gpu:0] Intel(R) Level-Zero, Intel(R) Arc(TM) A770 Graphics 1.3
+[ext_oneapi_level_zero:gpu:1] Intel(R) Level-Zero, Intel(R) Arc(TM) A770 Graphics 1.3
+[ext_oneapi_level_zero:gpu:2] Intel(R) Level-Zero, Intel(R) UHD Graphics 770 1.3
+```
+
+### Select by device index
+
+```python
+# Use the second Arc A770 (index 1)
+model = model.to("xpu:1")
+input_ids = tokenizer.encode(prompt, return_tensors="pt").to("xpu:1")
+```
+
+### Select via environment variable
+
+<Tabs>
+  <Tab title="Linux">
+    ```bash
+    # Use only the second A770 GPU
+    ONEAPI_DEVICE_SELECTOR=level_zero:1 python generate.py
+
+    # Or export for the session
+    export ONEAPI_DEVICE_SELECTOR=level_zero:1
+    python generate.py
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```cmd
+    set ONEAPI_DEVICE_SELECTOR=level_zero:1
+    python generate.py
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Pipeline parallel inference (multiple GPUs)
+
+For models too large to fit on a single GPU, IPEX-LLM supports pipeline parallelism, splitting model layers across multiple Intel GPUs.
+
+```python
+from ipex_llm.transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_low_bit="fp16",
+    optimize_model=True,
+    pipeline_parallel_stages=2,  # Split across 2 GPUs
+    trust_remote_code=True,
+)
+```
+
+<Note>
+  Pipeline parallel inference requires launching with `torchrun` or a compatible distributed launcher. See the [multi-GPU deployment guide](/deployment/multi-gpu) for the full setup.
+</Note>
+
+---
+
+## Full Qwen2 example
+
+The following is a complete GPU inference script for Qwen2, adapted from the IPEX-LLM example directory:
+
+```python
+import torch
+from ipex_llm.transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer
+
+model_path = "Qwen/Qwen2-7B-Instruct"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path,
+    load_in_4bit=True,
+    optimize_model=True,
+    trust_remote_code=True,
+    use_cache=True,
+)
+model = model.half().to("xpu")
+
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+
+with torch.inference_mode():
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is AI?"},
+    ]
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = tokenizer([text], return_tensors="pt").to("xpu")
+
+    # Warmup
+    _ = model.generate(inputs.input_ids, max_new_tokens=32)
+
+    # Timed inference
+    import time
+    st = time.time()
+    generated_ids = model.generate(inputs.input_ids, max_new_tokens=128)
+    torch.xpu.synchronize()
+    print(f"Inference time: {time.time() - st:.3f}s")
+
+    generated_ids = [
+        out[len(inp):] for inp, out in zip(inputs.input_ids, generated_ids)
+    ]
+    response = tokenizer.batch_decode(generated_ids.cpu(), skip_special_tokens=True)[0]
+    print(response)
+```
+
+<CardGroup cols={2}>
+  <Card title="Multi-GPU deployment" icon="server" href="/deployment/multi-gpu">
+    Distribute large models across multiple Intel GPUs with pipeline parallelism.
+  </Card>
+  <Card title="Speculative decoding" icon="bolt" href="/inference/speculative-decoding">
+    Speed up FP16/BF16 GPU inference by ~30% with self-speculative decoding.
+  </Card>
+  <Card title="NPU inference" icon="cpu" href="/inference/npu-inference">
+    Run inference on Intel NPU for power-efficient edge deployments.
+  </Card>
+  <Card title="Transformers API" icon="code" href="/inference/transformers-api">
+    Full parameter reference for AutoModelForCausalLM.from_pretrained.
+  </Card>
+</CardGroup>

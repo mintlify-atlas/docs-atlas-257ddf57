@@ -1,0 +1,337 @@
+---
+title: "Axolotl finetuning"
+description: "Finetune LLaMA 2/3 and other models on Intel GPU using Axolotl with IPEX-LLM as the quantized backend — no Python code required."
+---
+
+[Axolotl](https://github.com/OpenAccess-AI-Collective/axolotl) is a popular no-code finetuning framework that reads a YAML config and handles everything from data loading to training loop. IPEX-LLM acts as the accelerated backend, replacing the standard BitsAndBytes quantization with its own NF4 implementation optimized for Intel XPU devices.
+
+<Note>
+  IPEX-LLM's Axolotl integration targets **Axolotl v0.4.0** and requires **Linux** (Ubuntu 20.04 or later; Ubuntu 22.04 recommended). Windows is not supported for this workflow.
+</Note>
+
+## Prerequisites
+
+Before installing, make sure you have:
+
+- Intel GPU driver installed (Arc, Flex, or Max series)
+- Intel® oneAPI Base Toolkit 2024.0 installed
+
+Follow the [Install on Linux (GPU)](/quickstart/install-linux-gpu) guide for driver and oneAPI setup.
+
+## Installation
+
+<Steps>
+  <Step title="Create a conda environment and install IPEX-LLM">
+    ```bash
+    conda create -n axolotl python=3.11
+    conda activate axolotl
+
+    pip install --pre --upgrade ipex-llm[xpu] \
+        --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+    ```
+  </Step>
+
+  <Step title="Install Axolotl v0.4.0 with IPEX-LLM requirements">
+    Clone Axolotl at the v0.4.0 tag and replace the default `requirements.txt` with the IPEX-LLM XPU-specific version:
+
+    ```bash
+    git clone https://github.com/OpenAccess-AI-Collective/axolotl -b v0.4.0
+    cd axolotl
+
+    # Replace requirements with the IPEX-LLM XPU version
+    rm requirements.txt
+    wget -O requirements.txt \
+        https://raw.githubusercontent.com/intel-analytics/ipex-llm/main/python/llm/example/GPU/LLM-Finetuning/axolotl/requirements-xpu.txt
+
+    pip install -e .
+    pip install transformers==4.36.0
+    pip install datasets==2.15.0   # avoids PosixPath TypeError (#1544)
+    ```
+  </Step>
+
+  <Step title="Download the IPEX-LLM Axolotl entrypoints">
+    Axolotl's default CLI entrypoints need to be replaced with IPEX-LLM-patched versions:
+
+    ```bash
+    # Run these inside the axolotl/ directory
+    wget https://raw.githubusercontent.com/intel-analytics/ipex-llm/main/python/llm/example/GPU/LLM-Finetuning/axolotl/finetune.py
+    wget https://raw.githubusercontent.com/intel-analytics/ipex-llm/main/python/llm/example/GPU/LLM-Finetuning/axolotl/train.py
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Source oneAPI (required for APT or offline-installed oneAPI; skip for pip-installed oneAPI):
+
+    ```bash
+    source /opt/intel/oneapi/setvars.sh
+    ```
+
+    Configure `accelerate` to use the GPU:
+
+    ```bash
+    mkdir -p ~/.cache/huggingface/accelerate/
+    wget -O ~/.cache/huggingface/accelerate/default_config.yaml \
+        https://raw.githubusercontent.com/intel-analytics/ipex-llm/main/python/llm/example/GPU/LLM-Finetuning/axolotl/default_config.yaml
+    ```
+
+    Alternatively, run `accelerate config` and answer `NO` when asked whether to train on CPU only. Verify that `use_cpu: false` is set in `~/.cache/huggingface/accelerate/default_config.yaml`.
+  </Step>
+</Steps>
+
+## Finetune LLaMA 2-7B
+
+The following examples finetune `NousResearch/Llama-2-7b-hf` on the `mhenrichsen/alpaca_2k_test` dataset. Axolotl downloads models and datasets from HuggingFace automatically. Log in first:
+
+```bash
+huggingface-cli login
+```
+
+If you prefer to work offline, download the model and dataset, set their local paths in the YAML config, and export:
+
+```bash
+export HF_HUB_OFFLINE=1
+```
+
+<Tabs>
+  <Tab title="LoRA">
+    Download the LoRA config template:
+
+    ```bash
+    wget https://raw.githubusercontent.com/intel-analytics/ipex-llm/main/python/llm/example/GPU/LLM-Finetuning/axolotl/lora.yml
+    ```
+
+    The relevant sections of `lora.yml`:
+
+    ```yaml
+    base_model: NousResearch/Llama-2-7b-hf
+    model_type: LlamaForCausalLM
+    tokenizer_type: LlamaTokenizer
+
+    load_in_4bit: true
+    strict: false
+
+    datasets:
+      - path: mhenrichsen/alpaca_2k_test
+        type: alpaca
+    val_set_size: 0.05
+    output_dir: ./lora-out
+
+    sequence_len: 256
+    sample_packing: true
+    pad_to_sequence_len: true
+
+    adapter: lora
+    lora_r: 32
+    lora_alpha: 16
+    lora_dropout: 0.05
+    lora_target_linear: true
+
+    gradient_accumulation_steps: 4
+    micro_batch_size: 1
+    num_epochs: 4
+    optimizer: adamw_torch
+    lr_scheduler: cosine
+    learning_rate: 0.0002
+
+    bf16: true
+    fp16: false
+    gradient_checkpointing: true
+    flash_attention: false   # not supported on Intel GPU
+    ```
+
+    Launch training:
+
+    ```bash
+    accelerate launch finetune.py lora.yml
+    # or equivalently:
+    accelerate launch train.py lora.yml
+    ```
+  </Tab>
+  <Tab title="QLoRA">
+    Download the QLoRA config template:
+
+    ```bash
+    wget https://raw.githubusercontent.com/intel-analytics/ipex-llm/main/python/llm/example/GPU/LLM-Finetuning/axolotl/qlora.yml
+    ```
+
+    The relevant sections of `qlora.yml`:
+
+    ```yaml
+    base_model: NousResearch/Llama-2-7b-hf
+    model_type: LlamaForCausalLM
+    tokenizer_type: LlamaTokenizer
+    is_llama_derived_model: true
+
+    load_in_4bit: true
+    strict: false
+
+    datasets:
+      - path: mhenrichsen/alpaca_2k_test
+        type: alpaca
+    val_set_size: 0.05
+    output_dir: ./qlora-out
+
+    sequence_len: 256
+    sample_packing: true
+    pad_to_sequence_len: true
+
+    adapter: qlora
+    lora_r: 32
+    lora_alpha: 16
+    lora_dropout: 0.05
+    lora_target_linear: true
+
+    gradient_accumulation_steps: 4
+    micro_batch_size: 1
+    num_epochs: 4
+    optimizer: adamw_torch      # paged_adamw_32bit is not supported
+    lr_scheduler: cosine
+    learning_rate: 0.0002
+
+    bf16: true
+    fp16: false
+    gradient_checkpointing: true
+    flash_attention: false       # not supported on Intel GPU
+
+    special_tokens:
+      bos_token: "<s>"
+      eos_token: "</s>"
+      unk_token: "<unk>"
+    ```
+
+    Launch training:
+
+    ```bash
+    accelerate launch finetune.py qlora.yml
+    # or equivalently:
+    accelerate launch train.py qlora.yml
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  `flash_attention` is not supported on Intel GPU. Always set `flash_attention: false` in your config. `paged_adamw_32bit` is also not supported — use `adamw_torch` instead.
+</Warning>
+
+## Finetune LLaMA 3-8B (experimental)
+
+LLaMA 3 support requires Axolotl main branch (`796a085`) and a fresh conda environment:
+
+<Steps>
+  <Step title="Install Axolotl main with IPEX-LLM">
+    ```bash
+    conda create -n llm python=3.11
+    conda activate llm
+
+    git clone https://github.com/OpenAccess-AI-Collective/axolotl
+    cd axolotl && git checkout 796a085
+    pip install -e .
+
+    # Install IPEX-LLM (includes intel_extension_for_pytorch 2.1.10+xpu)
+    pip install --pre --upgrade ipex-llm[xpu] \
+        --extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+
+    pip install datasets==2.15.0
+    pip install transformers==4.37.0
+    ```
+
+    Configure oneAPI and accelerate as described in the [Installation](#installation) section above.
+  </Step>
+
+  <Step title="Download the LLaMA 3 QLoRA config">
+    ```bash
+    wget https://raw.githubusercontent.com/intel-analytics/ipex-llm/main/python/llm/example/GPU/LLM-Finetuning/axolotl/llama3-qlora.yml
+    ```
+
+    Key sections of `llama3-qlora.yml`:
+
+    ```yaml
+    base_model: meta-llama/Meta-Llama-3-8B
+    model_type: AutoModelForCausalLM
+    tokenizer_type: AutoTokenizer
+
+    load_in_4bit: true
+
+    datasets:
+      - path: aaditya/alpaca_subset_1
+        type: alpaca
+    output_dir: ./qlora-out
+
+    adapter: qlora
+    lora_r: 32
+    lora_alpha: 16
+    lora_dropout: 0.05
+    lora_target_linear: true
+
+    sequence_len: 256
+    sample_packing: true
+    pad_to_sequence_len: true
+
+    gradient_accumulation_steps: 4
+    micro_batch_size: 1
+    num_epochs: 4
+    optimizer: adamw_torch
+    lr_scheduler: cosine
+    learning_rate: 0.0002
+
+    bf16: true
+    gradient_checkpointing: true
+    flash_attention: false
+
+    special_tokens:
+      pad_token: "<|end_of_text|>"
+    ```
+  </Step>
+
+  <Step title="Launch training">
+    ```bash
+    accelerate launch finetune.py llama3-qlora.yml
+    # or equivalently:
+    accelerate launch train.py llama3-qlora.yml
+    ```
+
+    Expected output:
+
+    ```
+    {'loss': 0.237, 'learning_rate': 1.2254711850265387e-06, 'epoch': 3.77}
+    {'loss': 0.6068, 'learning_rate': 1.1692453482951115e-06, 'epoch': 3.77}
+    {'loss': 0.2926, 'learning_rate': 1.1143322458989303e-06, 'epoch': 3.78}
+    {'loss': 0.2475, 'learning_rate': 1.0607326072295087e-06, 'epoch': 3.78}
+    {'loss': 0.1531, 'learning_rate': 1.008447144232094e-06, 'epoch': 3.79}
+    ```
+  </Step>
+</Steps>
+
+## Supported datasets and models
+
+Axolotl supports any dataset in HuggingFace Hub format. The following dataset types work out of the box when set via the `type:` field in your YAML config:
+
+| Type | Example dataset |
+|---|---|
+| `alpaca` | `mhenrichsen/alpaca_2k_test`, `yahma/alpaca-cleaned`, `aaditya/alpaca_subset_1` |
+| `sharegpt` | ShareGPT-style conversation datasets |
+| Custom JSON/JSONL | Local files via `path: /local/path/to/dataset.jsonl` |
+
+Verified model families with Axolotl + IPEX-LLM:
+
+| Model | Config |
+|---|---|
+| LLaMA 2-7B | `lora.yml`, `qlora.yml` |
+| LLaMA 3-8B | `llama3-qlora.yml` (requires Axolotl main) |
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `TypeError: argument of type 'PosixPath' is not iterable` | datasets version incompatibility ([axolotl #1544](https://github.com/OpenAccess-AI-Collective/axolotl/issues/1544)) | `pip install datasets==2.15.0` |
+| `RuntimeError: Allocation is out of device memory` | GPU memory exhausted | Reduce `lora_r` or `micro_batch_size` in the YAML config |
+| `OSError: libmkl_intel_lp64.so.2: cannot open shared object file` | oneAPI environment not sourced | Run `source /opt/intel/oneapi/setvars.sh` |
+
+<CardGroup cols={2}>
+  <Card title="Finetuning overview" icon="book" href="/finetuning/overview">
+    See all supported methods, hardware, and verified models.
+  </Card>
+  <Card title="QLoRA finetuning" icon="layer-group" href="/finetuning/qlora">
+    Python API for QLoRA, LoRA, QA-LoRA, and DPO finetuning.
+  </Card>
+</CardGroup>

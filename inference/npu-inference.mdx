@@ -1,0 +1,308 @@
+---
+title: "NPU inference"
+description: "Run LLMs on Intel NPU for power-efficient, low-latency inference at the edge using the IPEX-LLM NPU API."
+---
+
+IPEX-LLM provides a dedicated NPU backend for Intel Neural Processing Units, available on platforms such as Intel Core Ultra (Meteor Lake, Lunar Lake, Arrow Lake) and Panther Lake. The NPU executes compute-intensive transformer layers while the CPU handles the remaining operations.
+
+<Note>
+  NPU inference uses a separate import path: `ipex_llm.transformers.npu_model`, not the standard `ipex_llm.transformers`. This is because the NPU backend compiles model operations into NPU-native kernels and saves compiled blobs to disk.
+</Note>
+
+---
+
+## Supported models
+
+The following model families have validated NPU support:
+
+- Llama 2, Llama 3, Llama 3.1, Llama 3.2
+- Qwen, Qwen 1.5, Qwen 2
+- MiniCPM
+- Baichuan 2
+- GLM-Edge (GLM-4)
+
+---
+
+## NPU vs GPU inference
+
+| Feature | GPU inference | NPU inference |
+|---|---|---|
+| Import path | `ipex_llm.transformers` | `ipex_llm.transformers.npu_model` |
+| Device placement | `.to('xpu')` | Runs on CPU/NPU automatically |
+| Supported `load_in_low_bit` | Many formats | `'sym_int4'`, `'sym_int8'`, `'asym_int4'` |
+| Requires save/load | Optional | Required for `optimize_model=True` |
+| Input tensors | Must move to XPU | Stay on CPU |
+
+---
+
+## Installation
+
+Install IPEX-LLM with the NPU extra and the Intel NPU Acceleration Library:
+
+```bash
+pip install "ipex-llm[npu]"
+```
+
+Follow the [NPU install guide](/quickstart/install-npu) for driver and platform requirements.
+
+---
+
+## Loading a model on NPU
+
+The NPU API mirrors the transformers-style `from_pretrained` interface with a few additional parameters.
+
+### First-time load and save
+
+On first use, load the model, compile it for NPU, and save the compiled artifact to disk. Subsequent runs load the compiled model directly, skipping the expensive compilation step.
+
+```python
+import os
+import torch
+from ipex_llm.transformers.npu_model import AutoModelForCausalLM
+from transformers import AutoTokenizer
+
+model_path = "meta-llama/Llama-2-7b-chat-hf"
+save_directory = "./llama-2-npu-int4"
+
+if not os.path.exists(save_directory):
+    # First run: load, compile for NPU, and save
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        trust_remote_code=True,
+        attn_implementation="eager",
+        load_in_low_bit="sym_int4",
+        optimize_model=True,
+        max_context_len=1024,
+        max_prompt_len=512,
+        save_directory=save_directory,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer.save_pretrained(save_directory)
+else:
+    # Subsequent runs: load compiled model directly
+    model = AutoModelForCausalLM.load_low_bit(
+        save_directory,
+        attn_implementation="eager",
+        torch_dtype=torch.float16,
+        optimize_model=True,
+        max_context_len=1024,
+        max_prompt_len=512,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(save_directory, trust_remote_code=True)
+```
+
+### Inference
+
+Input tensors remain on CPU for NPU inference — do not call `.to('xpu')`:
+
+```python
+with torch.inference_mode():
+    input_ids = tokenizer.encode("What is AI?", return_tensors="pt")
+    output = model.generate(
+        input_ids,
+        num_beams=1,
+        do_sample=False,
+        max_new_tokens=128,
+    )
+    print(tokenizer.decode(output[0], skip_special_tokens=True))
+```
+
+---
+
+## `from_pretrained` NPU parameters
+
+These parameters are specific to the NPU backend and extend the standard `from_pretrained` interface:
+
+<ParamField path="load_in_low_bit" type="string" default="'sym_int4'">
+  Quantization format. The NPU backend supports `'sym_int4'`, `'asym_int4'`, and `'sym_int8'`.
+</ParamField>
+
+<ParamField path="optimize_model" type="boolean" default="False">
+  When `True`, compiles the model into NPU kernels and writes compiled blobs to `save_directory`. This is required for NPU acceleration. When `False`, runs with a simpler CPU+NPU fallback.
+</ParamField>
+
+<ParamField path="max_context_len" type="int" default="1024">
+  Maximum total sequence length (prompt + generated tokens). The NPU kernel is compiled for this fixed size. Sequences exceeding this limit will error at runtime.
+</ParamField>
+
+<ParamField path="max_prompt_len" type="int" default="512">
+  Maximum input prompt length. Must be strictly less than `max_context_len`.
+</ParamField>
+
+<ParamField path="save_directory" type="string" required>
+  Directory where compiled NPU kernels (`.blob` files) are saved. Required when `optimize_model=True`.
+</ParamField>
+
+<ParamField path="mixed_precision" type="boolean" default="False">
+  Use `sym_int8` for the `lm_head` layer when `load_in_low_bit` is `sym_int4`, improving output accuracy.
+</ParamField>
+
+<ParamField path="quantization_group_size" type="int" default="0">
+  Quantization group size. Recommended values: `0`, `32`, `64`, `128`. A value of `0` uses per-layer quantization.
+</ParamField>
+
+---
+
+## Precision options
+
+<Tabs>
+  <Tab title="INT4 (default)">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        load_in_low_bit="sym_int4",
+        optimize_model=True,
+        save_directory="./model-npu-int4",
+        max_context_len=1024,
+        max_prompt_len=512,
+        torch_dtype=torch.float16,
+        attn_implementation="eager",
+    )
+    ```
+  </Tab>
+  <Tab title="INT8">
+    ```python
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        load_in_low_bit="sym_int8",
+        optimize_model=True,
+        save_directory="./model-npu-int8",
+        max_context_len=1024,
+        max_prompt_len=512,
+        torch_dtype=torch.float16,
+        attn_implementation="eager",
+    )
+    ```
+  </Tab>
+  <Tab title="INT4 with mixed precision">
+    ```python
+    # lm_head uses INT8 while the rest uses INT4
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        load_in_low_bit="sym_int4",
+        mixed_precision=True,
+        optimize_model=True,
+        save_directory="./model-npu-int4-mixed",
+        max_context_len=1024,
+        max_prompt_len=512,
+        torch_dtype=torch.float16,
+        attn_implementation="eager",
+    )
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Streaming output
+
+Use Hugging Face's `TextStreamer` to print tokens as they are generated:
+
+```python
+from transformers import AutoTokenizer, TextStreamer
+from ipex_llm.transformers.npu_model import AutoModelForCausalLM
+import torch
+
+model = AutoModelForCausalLM.load_low_bit(
+    "./llama-2-npu-int4",
+    attn_implementation="eager",
+    torch_dtype=torch.float16,
+    optimize_model=True,
+    max_context_len=1024,
+    max_prompt_len=512,
+)
+tokenizer = AutoTokenizer.from_pretrained("./llama-2-npu-int4")
+streamer = TextStreamer(tokenizer=tokenizer, skip_special_tokens=True)
+
+with torch.inference_mode():
+    input_ids = tokenizer.encode("Explain quantum computing.", return_tensors="pt")
+    model.generate(
+        input_ids,
+        num_beams=1,
+        do_sample=False,
+        max_new_tokens=128,
+        streamer=streamer,
+    )
+```
+
+---
+
+## Llama 3 example
+
+```python
+import os
+import torch
+from ipex_llm.transformers.npu_model import AutoModelForCausalLM
+from transformers import AutoTokenizer, TextStreamer
+
+model_path = "meta-llama/Meta-Llama-3-8B-Instruct"
+save_directory = "./llama-3-npu-int4"
+
+if not os.path.exists(save_directory):
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        torch_dtype=torch.float16,
+        trust_remote_code=True,
+        attn_implementation="eager",
+        load_in_low_bit="sym_int4",
+        optimize_model=True,
+        max_context_len=1024,
+        max_prompt_len=512,
+        save_directory=save_directory,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer.save_pretrained(save_directory)
+else:
+    model = AutoModelForCausalLM.load_low_bit(
+        save_directory,
+        attn_implementation="eager",
+        torch_dtype=torch.float16,
+        optimize_model=True,
+        max_context_len=1024,
+        max_prompt_len=512,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(save_directory, trust_remote_code=True)
+
+streamer = TextStreamer(tokenizer=tokenizer, skip_special_tokens=True)
+
+with torch.inference_mode():
+    prompt = (
+        "<|begin_of_text|>"
+        "<|start_header_id|>user<|end_header_id|>\n\n"
+        "What is AI?"
+        "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    )
+    input_ids = tokenizer.encode(prompt, return_tensors="pt")
+    model.generate(
+        input_ids, num_beams=1, do_sample=False, max_new_tokens=128, streamer=streamer
+    )
+```
+
+---
+
+## Performance tips
+
+<AccordionGroup>
+  <Accordion title="Set context lengths to match your workload">
+    `max_context_len` and `max_prompt_len` are compiled into the NPU kernel. Setting them larger than necessary wastes memory and can slow compilation. Profile your typical prompt lengths and set these conservatively.
+  </Accordion>
+  <Accordion title="Reuse compiled blobs">
+    The `save_directory` approach is important: reloading a compiled model with `load_low_bit` avoids minutes of NPU kernel compilation on every run. Always save on first use.
+  </Accordion>
+  <Accordion title="Run multiple inferences per session">
+    NPU inference amortizes a fixed session-startup cost. If you have many prompts to process, batching them in a single Python process is more efficient than spawning a new process per request.
+  </Accordion>
+  <Accordion title="Use do_sample=False for deterministic output">
+    Greedy decoding (`do_sample=False`, `num_beams=1`) is fully deterministic and runs efficiently on NPU. Sampling-based methods may have reduced NPU utilization.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="NPU install guide" icon="download" href="/quickstart/install-npu">
+    Install drivers and dependencies for Intel NPU on Windows.
+  </Card>
+  <Card title="GPU inference" icon="microchip" href="/inference/gpu-inference">
+    Run on Intel Arc, Flex, or Max discrete GPUs for higher throughput.
+  </Card>
+</CardGroup>
